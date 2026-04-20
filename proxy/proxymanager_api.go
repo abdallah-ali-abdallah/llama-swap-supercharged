@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mostlygeek/llama-swap/event"
+	"github.com/mostlygeek/llama-swap/proxy/config"
+	"gopkg.in/yaml.v3"
 )
 
 type Model struct {
@@ -24,11 +27,22 @@ type Model struct {
 	Aliases     []string `json:"aliases,omitempty"`
 }
 
+type ModelConfiguration struct {
+	ModelID       string   `json:"modelID"`
+	Cmd           string   `json:"cmd"`
+	Proxy         string   `json:"proxy"`
+	Env           []string `json:"env,omitempty"`
+	CheckEndpoint string   `json:"checkEndpoint"`
+	TTL           int      `json:"ttl"`
+	YAML          string   `json:"yaml"`
+}
+
 func addApiHandlers(pm *ProxyManager) {
 	// Add API endpoints for React to consume
 	// Protected with API key authentication
 	apiGroup := pm.ginEngine.Group("/api", pm.apiKeyAuth())
 	{
+		apiGroup.GET("/models/config/*model", pm.apiGetModelConfig)
 		apiGroup.POST("/models/unload", pm.apiUnloadAllModels)
 		apiGroup.POST("/models/unload/*model", pm.apiUnloadSingleModelHandler)
 		apiGroup.GET("/events", pm.apiSendEvents)
@@ -394,6 +408,87 @@ func (pm *ProxyManager) apiUnloadSingleModelHandler(c *gin.Context) {
 		return
 	}
 	c.String(http.StatusOK, "OK")
+}
+
+func (pm *ProxyManager) apiGetModelConfig(c *gin.Context) {
+	requestedModel := strings.TrimPrefix(c.Param("model"), "/")
+	realModelName, found := pm.config.RealModelName(requestedModel)
+	if !found {
+		pm.sendErrorResponse(c, http.StatusNotFound, "Model not found")
+		return
+	}
+
+	modelConfig := pm.config.Models[realModelName]
+	c.JSON(http.StatusOK, ModelConfiguration{
+		ModelID:       realModelName,
+		Cmd:           modelConfig.Cmd,
+		Proxy:         modelConfig.Proxy,
+		Env:           modelConfig.Env,
+		CheckEndpoint: modelConfig.CheckEndpoint,
+		TTL:           modelConfig.UnloadAfter,
+		YAML:          pm.modelConfigYAML(realModelName, modelConfig),
+	})
+}
+
+func (pm *ProxyManager) modelConfigYAML(modelID string, modelConfig config.ModelConfig) string {
+	if rawYAML, err := pm.rawModelConfigYAML(modelID); err == nil && rawYAML != "" {
+		return rawYAML
+	}
+
+	data, err := yaml.Marshal(modelConfig)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (pm *ProxyManager) rawModelConfigYAML(modelID string) (string, error) {
+	if strings.TrimSpace(pm.config.ConfigPath) == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(pm.config.ConfigPath)
+	if err != nil {
+		return "", err
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return "", err
+	}
+	if len(root.Content) == 0 {
+		return "", nil
+	}
+
+	document := root.Content[0]
+	if document.Kind != yaml.MappingNode {
+		return "", nil
+	}
+
+	for i := 0; i+1 < len(document.Content); i += 2 {
+		if document.Content[i].Value != "models" {
+			continue
+		}
+
+		modelsNode := document.Content[i+1]
+		if modelsNode.Kind != yaml.MappingNode {
+			return "", nil
+		}
+
+		for j := 0; j+1 < len(modelsNode.Content); j += 2 {
+			if modelsNode.Content[j].Value != modelID {
+				continue
+			}
+
+			data, err := yaml.Marshal(modelsNode.Content[j+1])
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(string(data)), nil
+		}
+	}
+
+	return "", nil
 }
 
 func (pm *ProxyManager) apiGetVersion(c *gin.Context) {

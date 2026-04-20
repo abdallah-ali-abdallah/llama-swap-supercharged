@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	"github.com/mostlygeek/llama-swap/event"
 	"github.com/mostlygeek/llama-swap/proxy/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
@@ -515,6 +518,47 @@ models:
 
 	// Name keys should match
 	assert.Equal(t, name1, name2)
+}
+
+func TestProxyManager_GetModelConfig(t *testing.T) {
+	configYaml := strings.ReplaceAll(`
+healthCheckTimeout: 15
+logLevel: error
+models:
+  main-model:
+    cmd: {{RESPONDER}} --port ${PORT} --silent --respond main-model --ctx-size 4096 -fa 1
+    proxy: http://127.0.0.1:${PORT}
+    aliases:
+      - alias-model
+    checkEndpoint: /health
+    ttl: 30
+`, "{{RESPONDER}}", filepath.ToSlash(simpleResponderPath))
+
+	configPath := filepath.Join(t.TempDir(), "llama-swap.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(configYaml), 0o600))
+
+	cfg, err := config.LoadConfig(configPath)
+	require.NoError(t, err)
+
+	proxy := New(cfg)
+	defer proxy.StopProcesses(StopImmediately)
+
+	req := httptest.NewRequest("GET", "/api/models/config/alias-model", nil)
+	w := CreateTestResponseRecorder()
+	proxy.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response ModelConfiguration
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+
+	assert.Equal(t, "main-model", response.ModelID)
+	assert.Contains(t, response.Cmd, "--ctx-size 4096")
+	assert.Contains(t, response.Cmd, "-fa 1")
+	assert.Equal(t, 30, response.TTL)
+	assert.Contains(t, response.YAML, "cmd:")
+	assert.Contains(t, response.YAML, "-fa 1")
+	assert.Contains(t, response.YAML, "aliases:")
 }
 
 func TestProxyManager_Shutdown(t *testing.T) {
