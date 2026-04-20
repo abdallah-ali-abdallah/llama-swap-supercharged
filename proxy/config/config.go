@@ -138,6 +138,7 @@ type Config struct {
 	UsageMetricsPersistence    bool                   `yaml:"usageMetricsPersistence"`
 	ActivityPersistence        bool                   `yaml:"activityPersistence"`
 	ActivityCapturePersistence bool                   `yaml:"activityCapturePersistence"`
+	CaptureRedactHeaders       bool                   `yaml:"captureRedactHeaders"`
 	ActivityFields             ActivityFieldsConfig   `yaml:"activityFields"`
 	CaptureBuffer              int                    `yaml:"captureBuffer"`
 	GlobalTTL                  int                    `yaml:"globalTTL"`
@@ -243,6 +244,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		UsageMetricsPersistence:    true,
 		ActivityPersistence:        true,
 		ActivityCapturePersistence: false,
+		CaptureRedactHeaders:       true,
 		ActivityFields: ActivityFieldsConfig{
 			Model:    true,
 			Tokens:   true,

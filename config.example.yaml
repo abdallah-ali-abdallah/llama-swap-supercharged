@@ -86,6 +86,11 @@ activityPersistence: true
 # - WARNING: persisted captures may contain prompts, responses, and request metadata
 activityCapturePersistence: false
 
+# captureRedactHeaders: redact sensitive request/response headers before saving captures
+# - optional, default: true
+# - when false, persisted captures include full request and response headers
+captureRedactHeaders: true
+
 # activityFields: controls which fields are saved for future activity rows
 # - optional, all fields default to true
 # - id and timestamp are always saved

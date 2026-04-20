@@ -233,6 +233,7 @@ groups:
 		MetricsQueryMaxRows:     100000,
 		UsageMetricsPersistence: true,
 		ActivityPersistence:     true,
+		CaptureRedactHeaders:    true,
 		ActivityFields: ActivityFieldsConfig{
 			Model:    true,
 			Tokens:   true,

@@ -119,30 +119,25 @@ func openMetricsStore(proxyConfig config.Config, logger *LogMonitor) *metricsSto
 		return nil
 	}
 
-	preferredPath := strings.TrimSpace(store.preferredPath())
-	if preferredPath != "" {
-		resolvedPath := resolveMetricsDBPath(proxyConfig, preferredPath)
-		if resolvedPath != dbPath {
-			newStore, err := newMetricsStoreWithOptions(
-				resolvedPath,
-				proxyConfig.MetricsRetentionDays,
-				proxyConfig.MetricsQueryMaxRows,
-				proxyConfig.UsageMetricsPersistence,
-				proxyConfig.ActivityPersistence,
-				proxyConfig.ActivityCapturePersistence,
-				proxyConfig.ActivityFields,
-				logger,
-			)
-			if err != nil {
-				if logger != nil {
-					logger.Warnf("failed to open selected metrics database %s: %v", resolvedPath, err)
-				}
-			} else {
-				store.close()
-				store = newStore
-				dbPath = resolvedPath
-			}
-		}
+	settings := store.settings()
+	settings.DBPath = dbPath
+	settings.LoggingEnabled = proxyConfig.LoggingEnabled
+	settings.UsageMetricsPersistence = proxyConfig.UsageMetricsPersistence
+	settings.ActivityPersistence = proxyConfig.ActivityPersistence
+	settings.ActivityCapturePersistence = proxyConfig.ActivityCapturePersistence
+	settings.CaptureRedactHeaders = proxyConfig.CaptureRedactHeaders
+	settings.ActivityFields = activityFieldsSettings{
+		Model:    proxyConfig.ActivityFields.Model,
+		Tokens:   proxyConfig.ActivityFields.Tokens,
+		Speeds:   proxyConfig.ActivityFields.Speeds,
+		Duration: proxyConfig.ActivityFields.Duration,
+	}
+	settings = normalizePersistenceSettings(settings)
+	conflicts := persistenceConflicts(store.settings(), settings)
+	if err := store.updateSettings(settings); err != nil && logger != nil {
+		logger.Warnf("failed to apply YAML metrics persistence settings: %v", err)
+	} else {
+		store.setYAMLConflicts(conflicts)
 	}
 
 	if logger != nil {

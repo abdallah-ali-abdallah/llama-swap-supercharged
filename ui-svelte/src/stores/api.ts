@@ -183,6 +183,9 @@ export interface ActivityFieldsSettings {
 
 export interface PersistenceSettings {
   sqlite_available: boolean;
+  yaml_available: boolean;
+  yaml_path: string;
+  yaml_conflicts?: PersistenceConflict[];
   db_path: string;
   retention_days: number;
   logging_enabled: boolean;
@@ -191,6 +194,12 @@ export interface PersistenceSettings {
   activity_capture_persistence: boolean;
   capture_redact_headers: boolean;
   activity_fields: ActivityFieldsSettings;
+}
+
+export interface PersistenceConflict {
+  field: string;
+  yaml_value: string;
+  sqlite_value: string;
 }
 
 export async function getPersistenceSettings(): Promise<PersistenceSettings | null> {

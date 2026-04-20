@@ -32,6 +32,9 @@ type activityFieldsSettings struct {
 
 type persistenceSettings struct {
 	SQLiteAvailable            bool                   `json:"sqlite_available"`
+	YAMLAvailable              bool                   `json:"yaml_available"`
+	YAMLPath                   string                 `json:"yaml_path"`
+	YAMLConflicts              []persistenceConflict  `json:"yaml_conflicts,omitempty"`
 	DBPath                     string                 `json:"db_path"`
 	RetentionDays              int                    `json:"retention_days"`
 	LoggingEnabled             bool                   `json:"logging_enabled"`
@@ -40,6 +43,12 @@ type persistenceSettings struct {
 	ActivityCapturePersistence bool                   `json:"activity_capture_persistence"`
 	CaptureRedactHeaders       bool                   `json:"capture_redact_headers"`
 	ActivityFields             activityFieldsSettings `json:"activity_fields"`
+}
+
+type persistenceConflict struct {
+	Field       string `json:"field"`
+	YAMLValue   string `json:"yaml_value"`
+	SQLiteValue string `json:"sqlite_value"`
 }
 
 type metricsStore struct {
@@ -55,6 +64,7 @@ type metricsStore struct {
 	activityCapturePersistence bool
 	captureRedactHeaders       bool
 	activityFields             activityFieldsSettings
+	yamlConflicts              []persistenceConflict
 	logger                     *LogMonitor
 }
 
@@ -441,6 +451,18 @@ func (s *metricsStore) settings() persistenceSettings {
 		CaptureRedactHeaders:       s.captureRedactHeaders,
 		ActivityFields:             s.activityFields,
 	}
+}
+
+func (s *metricsStore) setYAMLConflicts(conflicts []persistenceConflict) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.yamlConflicts = append([]persistenceConflict(nil), conflicts...)
+}
+
+func (s *metricsStore) yamlConflictsSnapshot() []persistenceConflict {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]persistenceConflict(nil), s.yamlConflicts...)
 }
 
 func (s *metricsStore) updateSettings(settings persistenceSettings) error {

@@ -168,6 +168,11 @@
             "default": false,
             "description": "Save request/response capture payloads to SQLite. captureBuffer must also be enabled. Persisted captures may contain prompts, responses, and request metadata."
         },
+        "captureRedactHeaders": {
+            "type": "boolean",
+            "default": true,
+            "description": "Redact sensitive request/response headers before saving captures. When false, persisted captures include full request and response headers."
+        },
         "activityFields": {
             "type": "object",
             "default": {

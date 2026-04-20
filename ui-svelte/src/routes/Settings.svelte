@@ -84,7 +84,7 @@
   <header class="flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1 class="p-0 text-2xl font-bold">Settings</h1>
-      <p class="mt-1 text-sm text-txtsecondary">Control what llama-swap stores in SQLite for dashboard and Activity history.</p>
+      <p class="mt-1 text-sm text-txtsecondary">Control what llama-swap saves for dashboard and Activity history.</p>
     </div>
     <button
       type="button"
@@ -103,7 +103,7 @@
       <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="p-0 text-lg font-semibold text-txtmain">SQLite Persistence</h2>
-          <p class="mt-1 text-sm text-txtsecondary">Settings are saved in SQLite and apply to new completed requests.</p>
+          <p class="mt-1 text-sm text-txtsecondary">Settings are saved to YAML and mirrored into SQLite. YAML wins if they conflict.</p>
         </div>
         <span class={`rounded-md px-3 py-1 text-sm font-semibold ${settings.sqlite_available ? "bg-[#73bf69]/20 text-[#9ce391]" : "bg-[#f2495c]/20 text-[#ff9aa5]"}`}>
           {settings.sqlite_available ? "Available" : "Unavailable"}
@@ -125,7 +125,29 @@
           <div class="mt-1 text-sm font-semibold text-txtmain">{settings.retention_days} days</div>
         </div>
       </div>
+      {#if settings.yaml_available}
+        <div class="mt-3 rounded-md border border-card-border-inner bg-secondary p-3">
+          <div class="text-xs uppercase tracking-wider text-txtsecondary">YAML config file</div>
+          <div class="mt-1 break-all text-sm font-semibold text-txtmain">{settings.yaml_path}</div>
+        </div>
+      {/if}
     </section>
+
+    {#if settings.yaml_conflicts?.length}
+      <section class="rounded-md border border-[#ff9830]/40 bg-[#ff9830]/10 p-4 text-sm text-[#ffcf9f]">
+        <div class="font-semibold text-[#ffd8ad]">YAML settings overrode SQLite.</div>
+        <div class="mt-1">The values below were read from SQLite but YAML has priority and was applied.</div>
+        <div class="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+          {#each settings.yaml_conflicts as conflict}
+            <div class="rounded-md border border-[#ff9830]/30 bg-[#000]/10 p-3">
+              <div class="font-semibold">{conflict.field}</div>
+              <div class="mt-1">YAML: {conflict.yaml_value}</div>
+              <div>SQLite: {conflict.sqlite_value}</div>
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
 
     <section class="rounded-lg border border-card-border bg-surface p-4 shadow-sm">
       <h2 class="p-0 text-lg font-semibold text-txtmain">Logging</h2>

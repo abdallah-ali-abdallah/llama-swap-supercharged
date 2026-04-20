@@ -396,7 +396,7 @@ func parseMetricRangeTime(value string) (time.Time, bool, error) {
 }
 
 func (pm *ProxyManager) apiGetPersistenceSettings(c *gin.Context) {
-	settings := pm.metricsMonitor.persistenceSettings()
+	settings := pm.persistenceSettingsWithYAMLPriority()
 	c.JSON(http.StatusOK, settings)
 }
 
@@ -411,6 +411,12 @@ func (pm *ProxyManager) apiUpdatePersistenceSettings(c *gin.Context) {
 		return
 	}
 	settings.DBPath = resolveMetricsDBPath(pm.config, settings.DBPath)
+	settings = normalizePersistenceSettings(settings)
+
+	if err := pm.writePersistenceSettingsToYAML(settings); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	updated, err := pm.metricsMonitor.updatePersistenceSettings(settings)
 	if err != nil {
@@ -418,6 +424,9 @@ func (pm *ProxyManager) apiUpdatePersistenceSettings(c *gin.Context) {
 		return
 	}
 	pm.applyLoggingEnabled(updated.LoggingEnabled)
+	pm.metricsMonitor.setYAMLConflicts(nil)
+	updated.YAMLAvailable = true
+	updated.YAMLPath = pm.config.ConfigPath
 	c.JSON(http.StatusOK, updated)
 }
 

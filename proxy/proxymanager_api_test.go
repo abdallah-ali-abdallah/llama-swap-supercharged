@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -213,8 +214,20 @@ func TestProxyManager_PersistenceSettingsAPI(t *testing.T) {
 	monitor := newMetricsMonitor(logger, 10, 0, store)
 	defer monitor.close()
 
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("models: {}\n"), 0o644))
 	pm := &ProxyManager{
-		config:         config.Config{ConfigPath: filepath.Join(t.TempDir(), "config.yaml")},
+		config: config.Config{
+			ConfigPath:                 configPath,
+			MetricsRetentionDays:       14,
+			MetricsQueryMaxRows:        100,
+			LoggingEnabled:             true,
+			UsageMetricsPersistence:    true,
+			ActivityPersistence:        true,
+			ActivityCapturePersistence: false,
+			CaptureRedactHeaders:       true,
+			ActivityFields:             allActivityFields(),
+		},
 		metricsMonitor: monitor,
 		proxyLogger:    logger,
 		upstreamLogger: logger,

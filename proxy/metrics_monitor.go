@@ -375,6 +375,25 @@ func (mp *metricsMonitor) persistenceSettings() persistenceSettings {
 	return store.settings()
 }
 
+func (mp *metricsMonitor) yamlConflicts() []persistenceConflict {
+	mp.mu.RLock()
+	store := mp.store
+	mp.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+	return store.yamlConflictsSnapshot()
+}
+
+func (mp *metricsMonitor) setYAMLConflicts(conflicts []persistenceConflict) {
+	mp.mu.RLock()
+	store := mp.store
+	mp.mu.RUnlock()
+	if store != nil {
+		store.setYAMLConflicts(conflicts)
+	}
+}
+
 func (mp *metricsMonitor) updatePersistenceSettings(settings persistenceSettings) (persistenceSettings, error) {
 	mp.mu.RLock()
 	store := mp.store
