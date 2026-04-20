@@ -73,6 +73,21 @@ models:
 	}
 }
 
+func TestConfig_ModelExcludeFromMetrics(t *testing.T) {
+	content := `
+models:
+  visible:
+    cmd: path/to/cmd --port ${PORT}
+  hidden:
+    cmd: path/to/cmd --port ${PORT}
+    excludeFromMetrics: true
+`
+	config, err := LoadConfigFromReader(strings.NewReader(content))
+	assert.NoError(t, err)
+	assert.False(t, config.Models["visible"].ExcludeFromMetrics)
+	assert.True(t, config.Models["hidden"].ExcludeFromMetrics)
+}
+
 func TestConfig_SetParamsByIDAutoAlias(t *testing.T) {
 	content := `
 models:

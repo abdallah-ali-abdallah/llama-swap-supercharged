@@ -182,7 +182,11 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 	}
 
 	sendMetrics := func(metrics []TokenMetrics) {
-		jsonData, err := json.Marshal(metrics)
+		filtered := pm.filterExcludedMetrics(metrics)
+		if len(filtered) == 0 {
+			return
+		}
+		jsonData, err := json.Marshal(filtered)
 		if err == nil {
 			select {
 			case sendBuffer <- messageEnvelope{Type: msgTypeMetrics, Data: string(jsonData)}:
@@ -264,7 +268,8 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 func (pm *ProxyManager) apiGetMetrics(c *gin.Context) {
 	rangeName := strings.TrimSpace(c.Query("range"))
 	if rangeName == "" || rangeName == "realtime" {
-		jsonData, err := pm.metricsMonitor.getMetricsJSON()
+		metrics := pm.filterExcludedMetrics(pm.metricsMonitor.getMetrics())
+		jsonData, err := json.Marshal(metrics)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
 			return
@@ -281,7 +286,12 @@ func (pm *ProxyManager) apiGetMetrics(c *gin.Context) {
 		return
 	}
 
-	jsonData, truncated, err := pm.metricsMonitor.getMetricsForRangeJSON(query)
+	metrics, truncated, err := pm.metricsMonitor.getMetricsForRange(query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
+		return
+	}
+	jsonData, err := json.Marshal(pm.filterExcludedMetrics(metrics))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
 		return
@@ -289,6 +299,31 @@ func (pm *ProxyManager) apiGetMetrics(c *gin.Context) {
 	c.Header("X-Metrics-Range", normalizedRange)
 	c.Header("X-Metrics-Truncated", strconv.FormatBool(truncated))
 	c.Data(http.StatusOK, "application/json", jsonData)
+}
+
+func (pm *ProxyManager) excludeModelFromMetrics(modelID string) bool {
+	modelConfig, found := pm.config.Models[modelID]
+	return found && modelConfig.ExcludeFromMetrics
+}
+
+func (pm *ProxyManager) filterExcludedMetrics(metrics []TokenMetrics) []TokenMetrics {
+	if len(metrics) == 0 {
+		return metrics
+	}
+
+	filtered := make([]TokenMetrics, 0, len(metrics))
+	excluded := false
+	for _, metric := range metrics {
+		if pm.excludeModelFromMetrics(metric.Model) {
+			excluded = true
+			continue
+		}
+		filtered = append(filtered, metric)
+	}
+	if !excluded {
+		return metrics
+	}
+	return filtered
 }
 
 func (pm *ProxyManager) parseMetricsRangeQuery(c *gin.Context) (metricsQuery, string, error) {

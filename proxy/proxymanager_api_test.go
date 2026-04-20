@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,4 +288,140 @@ func TestProxyManager_PersistenceSettingsAPI(t *testing.T) {
 	require.False(t, updated.ActivityFields.Speeds)
 	require.True(t, updated.ActivityFields.Duration)
 	require.False(t, logger.Enabled())
+}
+
+func TestProxyManager_ExcludeFromMetricsRealtime(t *testing.T) {
+	pm := newExcludeMetricsAPIProxyManager(t, nil)
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "visible", NewInputTokens: 1})
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "hidden", NewInputTokens: 2})
+
+	metrics := getMetricsAPIResponse(t, pm, "/api/metrics")
+
+	require.Equal(t, []string{"visible"}, metricModels(metrics))
+}
+
+func TestProxyManager_ExcludeFromMetricsRangeUsage(t *testing.T) {
+	pm := newExcludeMetricsAPIProxyManagerWithStore(t)
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "visible", NewInputTokens: 1})
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "hidden", NewInputTokens: 2})
+
+	metrics := getMetricsAPIResponse(t, pm, "/api/metrics?range=all")
+
+	require.Equal(t, []string{"visible"}, metricModels(metrics))
+}
+
+func TestProxyManager_ExcludeFromMetricsRangeActivity(t *testing.T) {
+	pm := newExcludeMetricsAPIProxyManagerWithStore(t)
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "visible", NewInputTokens: 1})
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "hidden", NewInputTokens: 2})
+
+	metrics := getMetricsAPIResponse(t, pm, "/api/metrics?range=all&scope=activity")
+
+	require.Equal(t, []string{"visible"}, metricModels(metrics))
+}
+
+func TestProxyManager_ExcludeFromMetricsSSE(t *testing.T) {
+	pm := newExcludeMetricsAPIProxyManager(t, nil)
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "visible", NewInputTokens: 1})
+	pm.metricsMonitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "hidden", NewInputTokens: 2})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(reqCtx)
+
+	done := make(chan struct{})
+	go func() {
+		pm.apiSendEvents(c)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for SSE stream to stop")
+	}
+
+	metrics := metricsFromSSEBody(t, w.Body.String())
+	require.Equal(t, []string{"visible"}, metricModels(metrics))
+}
+
+func newExcludeMetricsAPIProxyManagerWithStore(t *testing.T) *ProxyManager {
+	t.Helper()
+	logger := NewLogMonitorWriter(io.Discard)
+	store, err := newMetricsStore(filepath.Join(t.TempDir(), "metrics.db"), 30, 100, logger)
+	require.NoError(t, err)
+	t.Cleanup(store.close)
+	return newExcludeMetricsAPIProxyManager(t, newMetricsMonitor(logger, 100, 0, store))
+}
+
+func newExcludeMetricsAPIProxyManager(t *testing.T, monitor *metricsMonitor) *ProxyManager {
+	t.Helper()
+	logger := NewLogMonitorWriter(io.Discard)
+	if monitor == nil {
+		monitor = newMetricsMonitor(logger, 100, 0)
+	}
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	t.Cleanup(shutdownCancel)
+	return &ProxyManager{
+		config: config.Config{
+			MetricsQueryMaxRows: 100,
+			Models: map[string]config.ModelConfig{
+				"visible": {Cmd: "visible"},
+				"hidden":  {Cmd: "hidden", ExcludeFromMetrics: true},
+			},
+		},
+		metricsMonitor:  monitor,
+		proxyLogger:     logger,
+		upstreamLogger:  logger,
+		shutdownCtx:     shutdownCtx,
+		shutdownCancel:  shutdownCancel,
+		inFlightCounter: newInflightCounter(),
+	}
+}
+
+func getMetricsAPIResponse(t *testing.T, pm *ProxyManager, target string) []TokenMetrics {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, target, nil)
+
+	pm.apiGetMetrics(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var metrics []TokenMetrics
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &metrics))
+	return metrics
+}
+
+func metricsFromSSEBody(t *testing.T, body string) []TokenMetrics {
+	t.Helper()
+	metrics := []TokenMetrics{}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var envelope messageEnvelope
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &envelope); err != nil {
+			continue
+		}
+		if envelope.Type != msgTypeMetrics {
+			continue
+		}
+		var eventMetrics []TokenMetrics
+		require.NoError(t, json.Unmarshal([]byte(envelope.Data), &eventMetrics))
+		metrics = append(metrics, eventMetrics...)
+	}
+	return metrics
+}
+
+func metricModels(metrics []TokenMetrics) []string {
+	models := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		models = append(models, metric.Model)
+	}
+	return models
 }

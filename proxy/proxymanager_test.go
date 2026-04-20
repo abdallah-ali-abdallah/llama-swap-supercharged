@@ -1308,6 +1308,34 @@ models:
 	assert.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
 }
 
+func TestProxyManager_ExcludeFromMetricsSkipsRecording(t *testing.T) {
+	cfg := testConfigFromYAML(t, `
+healthCheckTimeout: 15
+logLevel: error
+models:
+  visible:
+    cmd: {{RESPONDER}} --port ${PORT} --silent --respond visible
+  hidden:
+    cmd: {{RESPONDER}} --port ${PORT} --silent --respond hidden
+    excludeFromMetrics: true
+`)
+
+	proxy := New(cfg)
+	defer proxy.StopProcesses(StopWaitForInflightRequest)
+	injectTestHandlers(proxy, nil)
+
+	for _, modelName := range []string{"visible", "hidden"} {
+		reqBody := fmt.Sprintf(`{"model":"%s"}`, modelName)
+		req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(reqBody))
+		rec := CreateTestResponseRecorder()
+
+		proxy.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	require.Equal(t, []string{"visible"}, metricModels(proxy.metricsMonitor.getMetrics()))
+}
+
 func TestProxyManager_ApiGetVersion(t *testing.T) {
 	cfg := testConfigFromYAML(t, `
 healthCheckTimeout: 15

@@ -780,7 +780,7 @@ func (pm *ProxyManager) proxyToUpstream(c *gin.Context) {
 	c.Request.URL.Path = remainingPath
 
 	// attempt to record metrics if it is a POST request
-	if pm.metricsMonitor != nil && c.Request.Method == "POST" {
+	if pm.metricsMonitor != nil && c.Request.Method == "POST" && !pm.excludeModelFromMetrics(modelID) {
 		if err := pm.metricsMonitor.wrapHandler(modelID, c.Writer, c.Request, handler); err != nil {
 			pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error proxying metrics wrapped request: %s", err.Error()))
 			pm.proxyLogger.Errorf("Error proxying wrapped upstream request for model %s, path=%s", modelID, originalPath)
@@ -924,7 +924,7 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 	ctx = context.WithValue(ctx, proxyCtxKey("model"), modelID)
 	c.Request = c.Request.WithContext(ctx)
 
-	if pm.metricsMonitor != nil && c.Request.Method == "POST" {
+	if pm.metricsMonitor != nil && c.Request.Method == "POST" && !pm.excludeModelFromMetrics(modelID) {
 		if err := pm.metricsMonitor.wrapHandler(modelID, c.Writer, c.Request, nextHandler); err != nil {
 			pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error proxying metrics wrapped request: %s", err.Error()))
 			pm.proxyLogger.Errorf("Error Proxying Metrics Wrapped Request model %s", modelID)
