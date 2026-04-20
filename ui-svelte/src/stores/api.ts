@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import type { Model, Metrics, VersionInfo, LogData, APIEventEnvelope, ReqRespCapture, InFlightStats } from "../lib/types";
+import type { Model, Metrics, VersionInfo, LogData, APIEventEnvelope, ReqRespCapture, InFlightStats, ModelConfiguration } from "../lib/types";
 import { connectionState } from "./theme";
 
 const LOG_LENGTH_LIMIT = 1024 * 100; /* 100KB of log data */
@@ -211,6 +211,22 @@ export async function loadModel(model: string): Promise<void> {
   } catch (error) {
     console.error("Failed to load model:", error);
     throw error;
+  }
+}
+
+export async function getModelConfiguration(model: string): Promise<ModelConfiguration | null> {
+  try {
+    const response = await fetch(`/api/models/config/${encodeURIComponent(model)}`);
+    if (response.status === 404) {
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(`Failed to fetch model configuration: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to fetch model configuration:", error);
+    return null;
   }
 }
 

@@ -12,6 +12,16 @@ export interface Model {
   aliases?: string[];
 }
 
+export interface ModelConfiguration {
+  modelID: string;
+  cmd: string;
+  proxy: string;
+  env?: string[];
+  checkEndpoint: string;
+  ttl: number;
+  yaml: string;
+}
+
 export interface Metrics {
   id: number;
   timestamp: string;

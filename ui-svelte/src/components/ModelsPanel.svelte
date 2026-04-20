@@ -1,11 +1,16 @@
 <script lang="ts">
-  import { models, loadModel, unloadAllModels, unloadSingleModel } from "../stores/api";
+  import ModelConfigurationDialog from "./ModelConfigurationDialog.svelte";
+  import { models, loadModel, unloadAllModels, unloadSingleModel, getModelConfiguration } from "../stores/api";
   import { isNarrow } from "../stores/theme";
   import { persistentStore } from "../stores/persistent";
-  import type { Model } from "../lib/types";
+  import type { Model, ModelConfiguration } from "../lib/types";
 
   let isUnloading = $state(false);
   let menuOpen = $state(false);
+  let selectedModel: Model | null = $state(null);
+  let selectedConfiguration: ModelConfiguration | null = $state(null);
+  let configDialogOpen = $state(false);
+  let configLoading = $state(false);
 
   const showUnlistedStore = persistentStore<boolean>("showUnlisted", true);
   const showIdorNameStore = persistentStore<"id" | "name">("showIdorName", "id");
@@ -52,6 +57,22 @@
 
   function getModelDisplay(model: Model): string {
     return $showIdorNameStore === "id" ? model.id : (model.name || model.id);
+  }
+
+  async function viewConfiguration(model: Model): Promise<void> {
+    selectedModel = model;
+    selectedConfiguration = null;
+    configDialogOpen = true;
+    configLoading = true;
+    try {
+      selectedConfiguration = await getModelConfiguration(model.id);
+    } finally {
+      configLoading = false;
+    }
+  }
+
+  function closeConfigurationDialog(): void {
+    configDialogOpen = false;
   }
 </script>
 
@@ -169,12 +190,15 @@
                 <p class="text-xs text-txtsecondary">Aliases: {model.aliases.join(", ")}</p>
               {/if}
             </td>
-            <td class="w-12">
+            <td class="w-48">
+              <div class="flex justify-end gap-2">
+                <button class="btn btn--sm whitespace-nowrap" onclick={() => viewConfiguration(model)}>View configurations</button>
               {#if model.state === "stopped"}
                 <button class="btn btn--sm" onclick={() => loadModel(model.id)}>Load</button>
               {:else}
                 <button class="btn btn--sm" onclick={() => unloadSingleModel(model.id)} disabled={model.state !== "ready"}>Unload</button>
               {/if}
+              </div>
             </td>
             <td class="w-20">
               <span class="w-16 text-center status status--{model.state}">{model.state}</span>
@@ -209,3 +233,11 @@
     {/if}
   </div>
 </div>
+
+<ModelConfigurationDialog
+  model={selectedModel}
+  configuration={selectedConfiguration}
+  open={configDialogOpen}
+  loading={configLoading}
+  onclose={closeConfigurationDialog}
+/>
