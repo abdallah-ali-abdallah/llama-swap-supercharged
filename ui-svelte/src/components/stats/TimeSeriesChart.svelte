@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { ChartSeries } from "../../lib/metricsStats";
+  import { chartAreaPath, chartPath, validPointSegments } from "../../lib/chartPaths";
+  import type { CurveMode, PositionedChartPoint } from "../../lib/chartPaths";
 
   interface Props {
     title: string;
@@ -8,9 +10,10 @@
     height?: number;
     toggleableLegend?: boolean;
     valueFractionDigits?: number;
+    curve?: CurveMode;
   }
 
-  let { title, series, unit = "", height = 220, toggleableLegend = false, valueFractionDigits }: Props = $props();
+  let { title, series, unit = "", height = 220, toggleableLegend = false, valueFractionDigits, curve = "linear" }: Props = $props();
 
   const width = 720;
   const padding = { top: 22, right: 18, bottom: 34, left: 54 };
@@ -37,28 +40,13 @@
     return padding.top + chartHeight - ((y - yMin) / yRange) * chartHeight;
   }
 
-  function linePath(item: ChartSeries): string {
-    const points = item.points.filter((point) => point.y !== null);
-    if (points.length === 0) return "";
+  function positionedSegments(item: ChartSeries): Array<Array<{ x: number; y: number }>> {
+    const points: PositionedChartPoint[] = item.points.map((point) => ({
+      x: xPos(point.x),
+      y: point.y === null ? null : yPos(point.y),
+    }));
 
-    return points
-      .map((point, index) => {
-        const command = index === 0 ? "M" : "L";
-        return `${command} ${xPos(point.x).toFixed(2)} ${yPos(point.y || 0).toFixed(2)}`;
-      })
-      .join(" ");
-  }
-
-  function areaPath(item: ChartSeries): string {
-    const points = item.points.filter((point) => point.y !== null);
-    if (points.length < 2) return "";
-
-    const line = linePath(item);
-    const last = points[points.length - 1];
-    const first = points[0];
-    const baseline = yPos(yMin);
-
-    return `${line} L ${xPos(last.x).toFixed(2)} ${baseline.toFixed(2)} L ${xPos(first.x).toFixed(2)} ${baseline.toFixed(2)} Z`;
+    return validPointSegments(points);
   }
 
   function formatNumber(value: number): string {
@@ -153,14 +141,16 @@
       {/each}
 
       {#each visibleSeries as item (item.label)}
-        {@const area = areaPath(item)}
-        {@const path = linePath(item)}
-        {#if area}
-          <path d={area} fill={item.color} opacity="0.12" />
-        {/if}
-        {#if path}
-          <path d={path} fill="none" stroke={item.color} stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-        {/if}
+        {#each positionedSegments(item) as segment}
+          {@const area = chartAreaPath(segment, yPos(yMin), curve)}
+          {@const path = chartPath(segment, curve)}
+          {#if area}
+            <path d={area} fill={item.color} opacity="0.12" />
+          {/if}
+          {#if path}
+            <path d={path} fill="none" stroke={item.color} stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+          {/if}
+        {/each}
         {#each item.points.filter((point) => point.y !== null).slice(-36) as point}
           <circle cx={xPos(point.x)} cy={yPos(point.y || 0)} r="3" fill={item.color} opacity="0.85">
             <title>{`${item.label}: ${formatNumber(point.y || 0)}${unit ? ` ${unit}` : ""}`}</title>
