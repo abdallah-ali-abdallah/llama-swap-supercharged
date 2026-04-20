@@ -156,6 +156,17 @@ metricsRetentionDays: 30
 # - protects the dashboard from loading too many rows at once
 metricsQueryMaxRows: 100000
 
+# activityPersistence: save completed request activity rows to SQLite
+# - optional, default: true
+# - when false, live activity still works but new rows are not persisted
+activityPersistence: true
+
+# activityCapturePersistence: save request/response capture payloads to SQLite
+# - optional, default: false
+# - captureBuffer must also be enabled
+# - WARNING: persisted captures may contain prompts, responses, and request metadata
+activityCapturePersistence: false
+
 # captureBuffer: how many MBs to allocate for storing request/response captures
 # - optional, default: 10
 # - set to 0 to disable

@@ -153,6 +153,16 @@
             "default": 100000,
             "description": "Maximum number of rows returned by a historical dashboard metrics query."
         },
+        "activityPersistence": {
+            "type": "boolean",
+            "default": true,
+            "description": "Save completed request activity rows to SQLite. When false, live activity still works but new rows are not persisted."
+        },
+        "activityCapturePersistence": {
+            "type": "boolean",
+            "default": false,
+            "description": "Save request/response capture payloads to SQLite. captureBuffer must also be enabled. Persisted captures may contain prompts, responses, and request metadata."
+        },
         "captureBuffer": {
             "type": "integer",
             "minimum": 0,

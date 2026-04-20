@@ -1,8 +1,22 @@
 <script lang="ts">
-  import { metrics, getCapture } from "../stores/api";
+  import { RefreshCw } from "lucide-svelte";
+  import { metrics, getCapture, listMetrics } from "../stores/api";
   import Tooltip from "../components/Tooltip.svelte";
   import CaptureDialog from "../components/CaptureDialog.svelte";
-  import type { ReqRespCapture } from "../lib/types";
+  import type { Metrics, ReqRespCapture } from "../lib/types";
+
+  const RANGE_OPTIONS = [
+    { value: "realtime", label: "Realtime" },
+    { value: "5m", label: "Past 5 minutes" },
+    { value: "10m", label: "Past 10 minutes" },
+    { value: "1h", label: "Past 1 hour" },
+    { value: "8h", label: "Past 8 hours" },
+    { value: "1d", label: "Past day" },
+    { value: "1w", label: "Past week" },
+    { value: "1mo", label: "Past month" },
+    { value: "all", label: "All" },
+    { value: "custom", label: "Custom" },
+  ];
 
   function formatSpeed(speed: number): string {
     return speed < 0 ? "unknown" : speed.toFixed(2) + " t/s";
@@ -39,11 +53,30 @@
     return "a while ago";
   }
 
-  let sortedMetrics = $derived([...$metrics].sort((a, b) => b.id - a.id));
+  let selectedRange = $state("realtime");
+  let customFrom = $state("");
+  let customTo = $state("");
+  let historicalMetrics = $state<Metrics[]>([]);
+  let historicalLoading = $state(false);
+  let historicalTruncated = $state(false);
+  let historicalError = $state("");
+  let refreshTick = $state(0);
+  let displayedMetrics = $derived(selectedRange === "realtime" ? $metrics : historicalMetrics);
+  let sortedMetrics = $derived([...displayedMetrics].sort((a, b) => b.id - a.id));
 
   let selectedCapture = $state<ReqRespCapture | null>(null);
   let dialogOpen = $state(false);
   let loadingCaptureId = $state<number | null>(null);
+
+  function dateTimeToISO(value: string): string | undefined {
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+
+  function refreshHistorical(): void {
+    refreshTick++;
+  }
 
   async function viewCapture(id: number) {
     loadingCaptureId = id;
@@ -59,14 +92,126 @@
     dialogOpen = false;
     selectedCapture = null;
   }
+
+  $effect(() => {
+    const range = selectedRange;
+    const from = customFrom;
+    const to = customTo;
+    const tick = refreshTick;
+
+    if (range === "realtime") {
+      historicalLoading = false;
+      historicalTruncated = false;
+      historicalError = "";
+      return;
+    }
+
+    const fromISO = range === "custom" ? dateTimeToISO(from) : undefined;
+    const toISO = range === "custom" ? dateTimeToISO(to) : undefined;
+    if (range === "custom" && !fromISO && !toISO) {
+      historicalMetrics = [];
+      historicalLoading = false;
+      historicalTruncated = false;
+      historicalError = "Select a custom start or end time.";
+      return;
+    }
+
+    let cancelled = false;
+    historicalLoading = true;
+    historicalError = "";
+
+    listMetrics({ range, from: fromISO, to: toISO })
+      .then((result) => {
+        if (cancelled) return;
+        historicalMetrics = result.metrics;
+        historicalTruncated = result.truncated;
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        historicalMetrics = [];
+        historicalTruncated = false;
+        historicalError = error instanceof Error ? error.message : "Failed to load activity.";
+      })
+      .finally(() => {
+        if (!cancelled) historicalLoading = false;
+      });
+
+    tick;
+    return () => {
+      cancelled = true;
+    };
+  });
 </script>
 
-<div class="p-2">
-  <h1 class="text-2xl font-bold">Activity</h1>
+<div class="flex flex-col gap-4 p-2">
+  <header class="flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold">Activity</h1>
+      <p class="mt-1 text-sm text-txtsecondary">Completed LLM requests and captured request details.</p>
+    </div>
+    <div class="flex flex-col items-end gap-2">
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        {#each RANGE_OPTIONS as option (option.value)}
+          <button
+            type="button"
+            onclick={() => (selectedRange = option.value)}
+            class={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
+              selectedRange === option.value
+                ? "border-[#5794f2] bg-[#5794f2]/20 text-[#cfe2ff]"
+                : "border-card-border bg-surface text-txtsecondary hover:border-card-border-inner hover:text-txtmain"
+            }`}
+          >
+            {option.label}
+          </button>
+        {/each}
+        {#if selectedRange !== "realtime"}
+          <button
+            type="button"
+            onclick={refreshHistorical}
+            disabled={historicalLoading}
+            title="Refresh activity"
+            class="inline-flex items-center gap-2 rounded-md border border-card-border bg-surface px-3 py-2 text-sm font-semibold text-txtsecondary transition hover:border-card-border-inner hover:text-txtmain disabled:opacity-60"
+          >
+            <RefreshCw size={15} class={historicalLoading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        {/if}
+      </div>
+      {#if selectedRange === "custom"}
+        <div class="flex flex-wrap items-center justify-end gap-2 text-sm text-txtsecondary">
+          <input
+            type="datetime-local"
+            bind:value={customFrom}
+            class="rounded-md border border-card-border bg-secondary px-3 py-2 text-txtmain outline-none focus:border-[#5794f2]"
+            aria-label="Custom range start"
+          />
+          <span>to</span>
+          <input
+            type="datetime-local"
+            bind:value={customTo}
+            class="rounded-md border border-card-border bg-secondary px-3 py-2 text-txtmain outline-none focus:border-[#5794f2]"
+            aria-label="Custom range end"
+          />
+        </div>
+      {/if}
+      <div class="rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-txtsecondary">
+        {#if historicalLoading}
+          Loading activity
+        {:else if historicalError}
+          {historicalError}
+        {:else if displayedMetrics.length === 0}
+          No activity
+        {:else}
+          {displayedMetrics.length.toLocaleString()} completed requests{selectedRange === "realtime" ? " in memory" : ""}
+          {historicalTruncated ? " (limited)" : ""}
+        {/if}
+      </div>
+    </div>
+  </header>
 
-  {#if $metrics.length === 0}
+  {#if displayedMetrics.length === 0}
     <div class="text-center py-8">
-      <p class="text-gray-600">No metrics data available</p>
+      <p class="text-gray-600">No activity data available</p>
     </div>
   {:else}
     <div class="card overflow-auto">

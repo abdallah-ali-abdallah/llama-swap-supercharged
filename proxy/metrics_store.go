@@ -21,14 +21,27 @@ type metricsQuery struct {
 }
 
 type metricsStore struct {
-	db               *sql.DB
-	path             string
-	retentionDays    int
-	defaultQueryRows int
-	logger           *LogMonitor
+	db                         *sql.DB
+	path                       string
+	retentionDays              int
+	defaultQueryRows           int
+	activityPersistence        bool
+	activityCapturePersistence bool
+	logger                     *LogMonitor
 }
 
 func newMetricsStore(path string, retentionDays int, defaultQueryRows int, logger *LogMonitor) (*metricsStore, error) {
+	return newMetricsStoreWithOptions(path, retentionDays, defaultQueryRows, true, false, logger)
+}
+
+func newMetricsStoreWithOptions(
+	path string,
+	retentionDays int,
+	defaultQueryRows int,
+	activityPersistence bool,
+	activityCapturePersistence bool,
+	logger *LogMonitor,
+) (*metricsStore, error) {
 	if path == "" {
 		return nil, errors.New("metrics database path is empty")
 	}
@@ -48,11 +61,13 @@ func newMetricsStore(path string, retentionDays int, defaultQueryRows int, logge
 	db.SetMaxOpenConns(1)
 
 	store := &metricsStore{
-		db:               db,
-		path:             path,
-		retentionDays:    retentionDays,
-		defaultQueryRows: defaultQueryRows,
-		logger:           logger,
+		db:                         db,
+		path:                       path,
+		retentionDays:              retentionDays,
+		defaultQueryRows:           defaultQueryRows,
+		activityPersistence:        activityPersistence,
+		activityCapturePersistence: activityCapturePersistence,
+		logger:                     logger,
 	}
 
 	if err := store.init(); err != nil {
@@ -69,6 +84,7 @@ func newMetricsStore(path string, retentionDays int, defaultQueryRows int, logge
 
 func (s *metricsStore) init() error {
 	commands := []string{
+		"PRAGMA foreign_keys=ON;",
 		"PRAGMA journal_mode=WAL;",
 		"PRAGMA busy_timeout=5000;",
 		`CREATE TABLE IF NOT EXISTS token_metrics (
@@ -82,6 +98,12 @@ func (s *metricsStore) init() error {
 			tokens_per_second REAL NOT NULL,
 			duration_ms INTEGER NOT NULL,
 			has_capture INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS activity_captures (
+			id INTEGER PRIMARY KEY,
+			created_ms INTEGER NOT NULL,
+			capture_zstd BLOB NOT NULL,
+			FOREIGN KEY(id) REFERENCES token_metrics(id) ON DELETE CASCADE
 		);`,
 		"CREATE INDEX IF NOT EXISTS idx_token_metrics_timestamp ON token_metrics(timestamp_ms);",
 		"CREATE INDEX IF NOT EXISTS idx_token_metrics_model_timestamp ON token_metrics(model, timestamp_ms);",
@@ -106,6 +128,9 @@ func (s *metricsStore) close() {
 
 func (s *metricsStore) insert(metric TokenMetrics) error {
 	if s == nil || s.db == nil {
+		return nil
+	}
+	if !s.activityPersistence {
 		return nil
 	}
 	if metric.Timestamp.IsZero() {
@@ -134,6 +159,43 @@ func (s *metricsStore) insert(metric TokenMetrics) error {
 	return nil
 }
 
+func (s *metricsStore) insertCapture(id int, compressed []byte) error {
+	if s == nil || s.db == nil || !s.activityPersistence || !s.activityCapturePersistence {
+		return nil
+	}
+	if len(compressed) == 0 {
+		return nil
+	}
+
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO activity_captures (
+			id, created_ms, capture_zstd
+		) VALUES (?, ?, ?)`,
+		id,
+		time.Now().UnixMilli(),
+		compressed,
+	)
+	if err != nil {
+		return fmt.Errorf("insert activity capture: %w", err)
+	}
+	return nil
+}
+
+func (s *metricsStore) getCapture(id int) ([]byte, bool, error) {
+	if s == nil || s.db == nil {
+		return nil, false, nil
+	}
+
+	var capture []byte
+	if err := s.db.QueryRow("SELECT capture_zstd FROM activity_captures WHERE id = ?", id).Scan(&capture); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read activity capture: %w", err)
+	}
+	return capture, true, nil
+}
+
 func (s *metricsStore) maxID() (int, error) {
 	if s == nil || s.db == nil {
 		return -1, nil
@@ -158,10 +220,11 @@ func (s *metricsStore) latest(limit int) ([]TokenMetrics, error) {
 	}
 
 	rows, err := s.db.Query(`SELECT
-			id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms, has_capture
+			token_metrics.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
+			prompt_per_second, tokens_per_second, duration_ms,
+			EXISTS(SELECT 1 FROM activity_captures WHERE activity_captures.id = token_metrics.id)
 		FROM token_metrics
-		ORDER BY id DESC
+		ORDER BY token_metrics.id DESC
 		LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query latest metrics: %w", err)
@@ -187,8 +250,9 @@ func (s *metricsStore) query(q metricsQuery) ([]TokenMetrics, bool, error) {
 	}
 
 	query := `SELECT
-			id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms, has_capture
+			token_metrics.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
+			prompt_per_second, tokens_per_second, duration_ms,
+			EXISTS(SELECT 1 FROM activity_captures WHERE activity_captures.id = token_metrics.id)
 		FROM token_metrics`
 	args := []any{}
 
@@ -238,6 +302,9 @@ func (s *metricsStore) cleanup() error {
 	if _, err := s.db.Exec("DELETE FROM token_metrics WHERE timestamp_ms < ?", cutoff); err != nil {
 		return fmt.Errorf("cleanup metrics: %w", err)
 	}
+	if _, err := s.db.Exec("DELETE FROM activity_captures WHERE id NOT IN (SELECT id FROM token_metrics)"); err != nil {
+		return fmt.Errorf("cleanup orphaned activity captures: %w", err)
+	}
 	return nil
 }
 
@@ -262,9 +329,7 @@ func scanTokenMetrics(rows *sql.Rows) ([]TokenMetrics, error) {
 			return nil, fmt.Errorf("scan metrics: %w", err)
 		}
 		metric.Timestamp = time.UnixMilli(timestampMs)
-		// Request/response captures are stored only in memory, so persisted
-		// metrics must not advertise unavailable captures after reload.
-		metric.HasCapture = false
+		metric.HasCapture = hasCapture != 0
 		metrics = append(metrics, metric)
 	}
 	if err := rows.Err(); err != nil {

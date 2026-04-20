@@ -204,7 +204,6 @@ func (mp *metricsMonitor) addCapture(capture ReqRespCapture) {
 	compressionRatio := (1 - float64(captureSize)/float64(uncompressedBytes)) * 100
 
 	mp.mu.Lock()
-	defer mp.mu.Unlock()
 
 	// Evict oldest (FIFO) until room available for the compressed data
 	for mp.captureSize+captureSize > mp.maxCaptureSize && len(mp.captureOrder) > 0 {
@@ -223,14 +222,38 @@ func (mp *metricsMonitor) addCapture(capture ReqRespCapture) {
 	mp.captureSize += captureSize
 
 	mp.logger.Debugf("Capture %d compressed and saved: %d bytes -> %d bytes (%.1f%% compression)", capture.ID, uncompressedBytes, len(compressed), compressionRatio)
+
+	store := mp.store
+	mp.mu.Unlock()
+
+	if store != nil {
+		if err := store.insertCapture(capture.ID, compressed); err != nil && mp.logger != nil {
+			mp.logger.Warnf("failed to persist capture %d: %v", capture.ID, err)
+		}
+	}
 }
 
 // getCompressedBytes returns the raw compressed bytes for a capture by ID.
 func (mp *metricsMonitor) getCompressedBytes(id int) ([]byte, bool) {
 	mp.mu.RLock()
-	defer mp.mu.RUnlock()
-
 	data, exists := mp.captures[id]
+	store := mp.store
+	mp.mu.RUnlock()
+	if exists {
+		return data, true
+	}
+
+	if store == nil {
+		return nil, false
+	}
+
+	data, exists, err := store.getCapture(id)
+	if err != nil {
+		if mp.logger != nil {
+			mp.logger.Warnf("failed to read persisted capture %d: %v", id, err)
+		}
+		return nil, false
+	}
 	return data, exists
 }
 
@@ -280,7 +303,12 @@ func (mp *metricsMonitor) getMetricsForRange(q metricsQuery) ([]TokenMetrics, bo
 	mp.mu.RUnlock()
 
 	if store != nil {
-		return store.query(q)
+		metrics, truncated, err := store.query(q)
+		if err != nil {
+			return nil, false, err
+		}
+		mp.markMemoryCapturesAvailable(metrics)
+		return metrics, truncated, nil
 	}
 
 	metrics := mp.getMetrics()
@@ -304,6 +332,16 @@ func (mp *metricsMonitor) getMetricsForRange(q metricsQuery) ([]TokenMetrics, bo
 		filtered = filtered[:limit]
 	}
 	return filtered, truncated, nil
+}
+
+func (mp *metricsMonitor) markMemoryCapturesAvailable(metrics []TokenMetrics) {
+	mp.mu.RLock()
+	defer mp.mu.RUnlock()
+	for i := range metrics {
+		if _, exists := mp.captures[metrics[i].ID]; exists {
+			metrics[i].HasCapture = true
+		}
+	}
 }
 
 func (mp *metricsMonitor) getMetricsForRangeJSON(q metricsQuery) ([]byte, bool, error) {

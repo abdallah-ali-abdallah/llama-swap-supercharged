@@ -230,6 +230,7 @@ groups:
 		MetricsMaxInMemory:   1000,
 		MetricsRetentionDays: 30,
 		MetricsQueryMaxRows:  100000,
+		ActivityPersistence:  true,
 		CaptureBuffer:        5,
 		Profiles: map[string][]string{
 			"test": {"model1", "model2"},

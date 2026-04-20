@@ -118,20 +118,22 @@ type HookOnStartup struct {
 }
 
 type Config struct {
-	HealthCheckTimeout   int                    `yaml:"healthCheckTimeout"`
-	LogRequests          bool                   `yaml:"logRequests"`
-	LogLevel             string                 `yaml:"logLevel"`
-	LogTimeFormat        string                 `yaml:"logTimeFormat"`
-	LogToStdout          string                 `yaml:"logToStdout"`
-	MetricsMaxInMemory   int                    `yaml:"metricsMaxInMemory"`
-	MetricsDBPath        string                 `yaml:"metricsDBPath"`
-	MetricsRetentionDays int                    `yaml:"metricsRetentionDays"`
-	MetricsQueryMaxRows  int                    `yaml:"metricsQueryMaxRows"`
-	CaptureBuffer        int                    `yaml:"captureBuffer"`
-	GlobalTTL            int                    `yaml:"globalTTL"`
-	Models               map[string]ModelConfig `yaml:"models"` /* key is model ID */
-	Profiles             map[string][]string    `yaml:"profiles"`
-	Groups               map[string]GroupConfig `yaml:"groups"` /* key is group ID */
+	HealthCheckTimeout         int                    `yaml:"healthCheckTimeout"`
+	LogRequests                bool                   `yaml:"logRequests"`
+	LogLevel                   string                 `yaml:"logLevel"`
+	LogTimeFormat              string                 `yaml:"logTimeFormat"`
+	LogToStdout                string                 `yaml:"logToStdout"`
+	MetricsMaxInMemory         int                    `yaml:"metricsMaxInMemory"`
+	MetricsDBPath              string                 `yaml:"metricsDBPath"`
+	MetricsRetentionDays       int                    `yaml:"metricsRetentionDays"`
+	MetricsQueryMaxRows        int                    `yaml:"metricsQueryMaxRows"`
+	ActivityPersistence        bool                   `yaml:"activityPersistence"`
+	ActivityCapturePersistence bool                   `yaml:"activityCapturePersistence"`
+	CaptureBuffer              int                    `yaml:"captureBuffer"`
+	GlobalTTL                  int                    `yaml:"globalTTL"`
+	Models                     map[string]ModelConfig `yaml:"models"` /* key is model ID */
+	Profiles                   map[string][]string    `yaml:"profiles"`
+	Groups                     map[string]GroupConfig `yaml:"groups"` /* key is group ID */
 
 	// swap matrix: solver-based alternative to groups
 	Matrix *MatrixConfig `yaml:"matrix"`
@@ -219,16 +221,18 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 
 	// Unmarshal into full Config with defaults
 	config := Config{
-		HealthCheckTimeout:   120,
-		StartPort:            5800,
-		LogLevel:             "info",
-		LogTimeFormat:        "",
-		LogToStdout:          LogToStdoutProxy,
-		MetricsMaxInMemory:   1000,
-		MetricsRetentionDays: 30,
-		MetricsQueryMaxRows:  100000,
-		CaptureBuffer:        5,
-		GlobalTTL:            0,
+		HealthCheckTimeout:         120,
+		StartPort:                  5800,
+		LogLevel:                   "info",
+		LogTimeFormat:              "",
+		LogToStdout:                LogToStdoutProxy,
+		MetricsMaxInMemory:         1000,
+		MetricsRetentionDays:       30,
+		MetricsQueryMaxRows:        100000,
+		ActivityPersistence:        true,
+		ActivityCapturePersistence: false,
+		CaptureBuffer:              5,
+		GlobalTTL:                  0,
 	}
 	if err = yaml.Unmarshal([]byte(yamlStr), &config); err != nil {
 		return Config{}, err

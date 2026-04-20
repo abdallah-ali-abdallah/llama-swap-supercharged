@@ -111,7 +111,14 @@ func openMetricsStore(proxyConfig config.Config, logger *LogMonitor) *metricsSto
 		dbPath = filepath.Join(baseDir, dbPath)
 	}
 
-	store, err := newMetricsStore(dbPath, proxyConfig.MetricsRetentionDays, proxyConfig.MetricsQueryMaxRows, logger)
+	store, err := newMetricsStoreWithOptions(
+		dbPath,
+		proxyConfig.MetricsRetentionDays,
+		proxyConfig.MetricsQueryMaxRows,
+		proxyConfig.ActivityPersistence,
+		proxyConfig.ActivityCapturePersistence,
+		logger,
+	)
 	if err != nil {
 		if logger != nil {
 			logger.Warnf("metrics persistence disabled: %v", err)
