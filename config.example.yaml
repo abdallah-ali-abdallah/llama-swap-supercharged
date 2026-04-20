@@ -50,6 +50,21 @@ logToStdout: "proxy"
 # - useful for limiting memory usage when processing large volumes of metrics
 metricsMaxInMemory: 1000
 
+# metricsDBPath: path to the SQLite database used for persisted dashboard metrics
+# - optional, default: llama-swap-metrics.db next to the config file
+# - relative paths are resolved from the config file directory
+metricsDBPath: llama-swap-metrics.db
+
+# metricsRetentionDays: how many days of dashboard metrics to keep in SQLite
+# - optional, default: 30
+# - set to 0 to disable automatic cleanup
+metricsRetentionDays: 30
+
+# metricsQueryMaxRows: maximum rows returned by a historical dashboard query
+# - optional, default: 100000
+# - protects the dashboard from loading too many rows at once
+metricsQueryMaxRows: 100000
+
 # captureBuffer: how many MBs to allocate for storing request/response captures
 # - optional, default: 10
 # - set to 0 to disable

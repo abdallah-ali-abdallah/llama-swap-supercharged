@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -117,17 +118,20 @@ type HookOnStartup struct {
 }
 
 type Config struct {
-	HealthCheckTimeout int                    `yaml:"healthCheckTimeout"`
-	LogRequests        bool                   `yaml:"logRequests"`
-	LogLevel           string                 `yaml:"logLevel"`
-	LogTimeFormat      string                 `yaml:"logTimeFormat"`
-	LogToStdout        string                 `yaml:"logToStdout"`
-	MetricsMaxInMemory int                    `yaml:"metricsMaxInMemory"`
-	CaptureBuffer      int                    `yaml:"captureBuffer"`
-	GlobalTTL          int                    `yaml:"globalTTL"`
-	Models             map[string]ModelConfig `yaml:"models"` /* key is model ID */
-	Profiles           map[string][]string    `yaml:"profiles"`
-	Groups             map[string]GroupConfig `yaml:"groups"` /* key is group ID */
+	HealthCheckTimeout   int                    `yaml:"healthCheckTimeout"`
+	LogRequests          bool                   `yaml:"logRequests"`
+	LogLevel             string                 `yaml:"logLevel"`
+	LogTimeFormat        string                 `yaml:"logTimeFormat"`
+	LogToStdout          string                 `yaml:"logToStdout"`
+	MetricsMaxInMemory   int                    `yaml:"metricsMaxInMemory"`
+	MetricsDBPath        string                 `yaml:"metricsDBPath"`
+	MetricsRetentionDays int                    `yaml:"metricsRetentionDays"`
+	MetricsQueryMaxRows  int                    `yaml:"metricsQueryMaxRows"`
+	CaptureBuffer        int                    `yaml:"captureBuffer"`
+	GlobalTTL            int                    `yaml:"globalTTL"`
+	Models               map[string]ModelConfig `yaml:"models"` /* key is model ID */
+	Profiles             map[string][]string    `yaml:"profiles"`
+	Groups               map[string]GroupConfig `yaml:"groups"` /* key is group ID */
 
 	// swap matrix: solver-based alternative to groups
 	Matrix *MatrixConfig `yaml:"matrix"`
@@ -158,6 +162,9 @@ type Config struct {
 
 	// support remote peers, see issue #433, #296
 	Peers PeerDictionaryConfig `yaml:"peers"`
+
+	// absolute path to the loaded config file, used for path-relative defaults.
+	ConfigPath string `yaml:"-"`
 }
 
 func (c *Config) RealModelName(search string) (string, bool) {
@@ -184,7 +191,16 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	defer file.Close()
-	return LoadConfigFromReader(file)
+	config, err := LoadConfigFromReader(file)
+	if err != nil {
+		return Config{}, err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, err
+	}
+	config.ConfigPath = absPath
+	return config, nil
 }
 
 func LoadConfigFromReader(r io.Reader) (Config, error) {
@@ -203,14 +219,16 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 
 	// Unmarshal into full Config with defaults
 	config := Config{
-		HealthCheckTimeout: 120,
-		StartPort:          5800,
-		LogLevel:           "info",
-		LogTimeFormat:      "",
-		LogToStdout:        LogToStdoutProxy,
-		MetricsMaxInMemory: 1000,
-		CaptureBuffer:      5,
-		GlobalTTL:          0,
+		HealthCheckTimeout:   120,
+		StartPort:            5800,
+		LogLevel:             "info",
+		LogTimeFormat:        "",
+		LogToStdout:          LogToStdoutProxy,
+		MetricsMaxInMemory:   1000,
+		MetricsRetentionDays: 30,
+		MetricsQueryMaxRows:  100000,
+		CaptureBuffer:        5,
+		GlobalTTL:            0,
 	}
 	if err = yaml.Unmarshal([]byte(yamlStr), &config); err != nil {
 		return Config{}, err
@@ -226,6 +244,14 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 
 	if config.GlobalTTL < 0 {
 		return Config{}, fmt.Errorf("globalTTL must be >= 0")
+	}
+
+	if config.MetricsRetentionDays < 0 {
+		return Config{}, fmt.Errorf("metricsRetentionDays must be >= 0")
+	}
+
+	if config.MetricsQueryMaxRows < 1 {
+		return Config{}, fmt.Errorf("metricsQueryMaxRows must be >= 1")
 	}
 
 	switch config.LogToStdout {

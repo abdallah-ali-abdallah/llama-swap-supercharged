@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -95,6 +96,35 @@ type ProxyManager struct {
 	peerProxy *PeerProxy
 }
 
+func openMetricsStore(proxyConfig config.Config, logger *LogMonitor) *metricsStore {
+	dbPath := strings.TrimSpace(proxyConfig.MetricsDBPath)
+	if dbPath == "" {
+		if proxyConfig.ConfigPath == "" {
+			return nil
+		}
+		dbPath = filepath.Join(filepath.Dir(proxyConfig.ConfigPath), "llama-swap-metrics.db")
+	} else if !filepath.IsAbs(dbPath) {
+		baseDir := "."
+		if proxyConfig.ConfigPath != "" {
+			baseDir = filepath.Dir(proxyConfig.ConfigPath)
+		}
+		dbPath = filepath.Join(baseDir, dbPath)
+	}
+
+	store, err := newMetricsStore(dbPath, proxyConfig.MetricsRetentionDays, proxyConfig.MetricsQueryMaxRows, logger)
+	if err != nil {
+		if logger != nil {
+			logger.Warnf("metrics persistence disabled: %v", err)
+		}
+		return nil
+	}
+
+	if logger != nil {
+		logger.Infof("metrics persistence enabled: %s", dbPath)
+	}
+	return store
+}
+
 func New(proxyConfig config.Config) *ProxyManager {
 	// set up loggers
 
@@ -176,6 +206,8 @@ func New(proxyConfig config.Config) *ProxyManager {
 		maxMetrics = proxyConfig.MetricsMaxInMemory
 	}
 
+	metricsStore := openMetricsStore(proxyConfig, proxyLogger)
+
 	peerProxy, err := NewPeerProxy(proxyConfig.Peers, proxyLogger)
 	if err != nil {
 		proxyLogger.Errorf("Disabling Peering. Failed to create proxy peers: %v", err)
@@ -190,7 +222,7 @@ func New(proxyConfig config.Config) *ProxyManager {
 		muxLogger:      muxLogger,
 		upstreamLogger: upstreamLogger,
 
-		metricsMonitor: newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer),
+		metricsMonitor: newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer, metricsStore),
 
 		processGroups: make(map[string]*ProcessGroup),
 
@@ -499,6 +531,7 @@ func (pm *ProxyManager) Shutdown() {
 	if pm.matrix != nil {
 		pm.matrix.Shutdown()
 		pm.shutdownCancel()
+		pm.metricsMonitor.close()
 		return
 	}
 
@@ -513,6 +546,7 @@ func (pm *ProxyManager) Shutdown() {
 	}
 	wg.Wait()
 	pm.shutdownCancel()
+	pm.metricsMonitor.close()
 }
 
 func (pm *ProxyManager) swapProcessGroup(realModelName string) (*ProcessGroup, error) {

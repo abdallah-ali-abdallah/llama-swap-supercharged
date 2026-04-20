@@ -139,6 +139,39 @@ export async function listModels(): Promise<Model[]> {
   }
 }
 
+export interface MetricsRangeOptions {
+  range: string;
+  from?: string;
+  to?: string;
+}
+
+export interface MetricsRangeResult {
+  metrics: Metrics[];
+  truncated: boolean;
+}
+
+export async function listMetrics(options: MetricsRangeOptions): Promise<MetricsRangeResult> {
+  try {
+    const params = new URLSearchParams();
+    params.set("range", options.range);
+    if (options.from) params.set("from", options.from);
+    if (options.to) params.set("to", options.to);
+
+    const response = await fetch(`/api/metrics?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = (await response.json()) as Metrics[] | null;
+    return {
+      metrics: data || [],
+      truncated: response.headers.get("X-Metrics-Truncated") === "true",
+    };
+  } catch (error) {
+    console.error("Failed to fetch metrics:", error);
+    return { metrics: [], truncated: false };
+  }
+}
+
 export async function unloadAllModels(): Promise<void> {
   try {
     const response = await fetch(`/api/models/unload`, {

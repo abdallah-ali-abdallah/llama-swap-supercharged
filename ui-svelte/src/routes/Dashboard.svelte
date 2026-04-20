@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { inFlightRequests, metrics } from "../stores/api";
+  import { RefreshCw } from "lucide-svelte";
+  import { inFlightRequests, listMetrics, metrics } from "../stores/api";
   import HistogramChart from "../components/stats/HistogramChart.svelte";
   import ModelBreakdown from "../components/stats/ModelBreakdown.svelte";
   import StatCard from "../components/stats/StatCard.svelte";
@@ -7,10 +8,32 @@
   import TokenComposition from "../components/stats/TokenComposition.svelte";
   import { summarizeDashboard } from "../lib/metricsStats";
   import type { ModelMetricSummary } from "../lib/metricsStats";
+  import type { Metrics } from "../lib/types";
 
   const nf = new Intl.NumberFormat();
+  const RANGE_OPTIONS = [
+    { value: "realtime", label: "Realtime" },
+    { value: "5m", label: "Past 5 min" },
+    { value: "10m", label: "Past 10 min" },
+    { value: "1h", label: "Past 1 hour" },
+    { value: "8h", label: "Past 8 hours" },
+    { value: "1d", label: "Past day" },
+    { value: "1w", label: "Past week" },
+    { value: "1mo", label: "Past month" },
+    { value: "all", label: "All" },
+    { value: "custom", label: "Custom" },
+  ];
 
-  let dashboard = $derived(summarizeDashboard($metrics, $inFlightRequests));
+  let selectedRange = $state("realtime");
+  let customFrom = $state("");
+  let customTo = $state("");
+  let historicalMetrics = $state<Metrics[]>([]);
+  let historicalLoading = $state(false);
+  let historicalTruncated = $state(false);
+  let historicalError = $state("");
+  let refreshTick = $state(0);
+  let displayedMetrics = $derived(selectedRange === "realtime" ? $metrics : historicalMetrics);
+  let dashboard = $derived(summarizeDashboard(displayedMetrics, selectedRange === "realtime" ? $inFlightRequests : 0));
 
   function number(value: number): string {
     return nf.format(Math.round(value));
@@ -41,6 +64,65 @@
       new Date(model.latestTimestamp),
     );
   }
+
+  function dateTimeToISO(value: string): string | undefined {
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+
+  function refreshHistorical(): void {
+    refreshTick++;
+  }
+
+  $effect(() => {
+    const range = selectedRange;
+    const from = customFrom;
+    const to = customTo;
+    const tick = refreshTick;
+
+    if (range === "realtime") {
+      historicalLoading = false;
+      historicalTruncated = false;
+      historicalError = "";
+      return;
+    }
+
+    const fromISO = range === "custom" ? dateTimeToISO(from) : undefined;
+    const toISO = range === "custom" ? dateTimeToISO(to) : undefined;
+    if (range === "custom" && !fromISO && !toISO) {
+      historicalMetrics = [];
+      historicalLoading = false;
+      historicalTruncated = false;
+      historicalError = "Select a custom start or end time.";
+      return;
+    }
+
+    let cancelled = false;
+    historicalLoading = true;
+    historicalError = "";
+
+    listMetrics({ range, from: fromISO, to: toISO })
+      .then((result) => {
+        if (cancelled) return;
+        historicalMetrics = result.metrics;
+        historicalTruncated = result.truncated;
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        historicalMetrics = [];
+        historicalTruncated = false;
+        historicalError = error instanceof Error ? error.message : "Failed to load metrics.";
+      })
+      .finally(() => {
+        if (!cancelled) historicalLoading = false;
+      });
+
+    tick;
+    return () => {
+      cancelled = true;
+    };
+  });
 </script>
 
 <div class="mx-auto flex max-w-[1800px] flex-col gap-5 p-2">
@@ -51,8 +133,63 @@
         Real-time token consumption, cache efficiency, and generation performance.
       </p>
     </div>
-    <div class="rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-txtsecondary">
-      {$metrics.length === 0 ? "Waiting for metrics" : `${nf.format($metrics.length)} completed requests in memory`}
+    <div class="flex flex-col items-end gap-2">
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        {#each RANGE_OPTIONS as option (option.value)}
+          <button
+            type="button"
+            onclick={() => (selectedRange = option.value)}
+            class={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
+              selectedRange === option.value
+                ? "border-[#5794f2] bg-[#5794f2]/20 text-[#cfe2ff]"
+                : "border-card-border bg-surface text-txtsecondary hover:border-card-border-inner hover:text-txtmain"
+            }`}
+          >
+            {option.label}
+          </button>
+        {/each}
+        {#if selectedRange !== "realtime"}
+          <button
+            type="button"
+            onclick={refreshHistorical}
+            disabled={historicalLoading}
+            title="Refresh metrics"
+            class="inline-flex items-center gap-2 rounded-md border border-card-border bg-surface px-3 py-2 text-sm font-semibold text-txtsecondary transition hover:border-card-border-inner hover:text-txtmain disabled:opacity-60"
+          >
+            <RefreshCw size={15} class={historicalLoading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        {/if}
+      </div>
+      {#if selectedRange === "custom"}
+        <div class="flex flex-wrap items-center justify-end gap-2 text-sm text-txtsecondary">
+          <input
+            type="datetime-local"
+            bind:value={customFrom}
+            class="rounded-md border border-card-border bg-secondary px-3 py-2 text-txtmain outline-none focus:border-[#5794f2]"
+            aria-label="Custom range start"
+          />
+          <span>to</span>
+          <input
+            type="datetime-local"
+            bind:value={customTo}
+            class="rounded-md border border-card-border bg-secondary px-3 py-2 text-txtmain outline-none focus:border-[#5794f2]"
+            aria-label="Custom range end"
+          />
+        </div>
+      {/if}
+      <div class="rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-txtsecondary">
+        {#if historicalLoading}
+          Loading metrics
+        {:else if historicalError}
+          {historicalError}
+        {:else if displayedMetrics.length === 0}
+          Waiting for metrics
+        {:else}
+          {nf.format(displayedMetrics.length)} completed requests{selectedRange === "realtime" ? " in memory" : ""}
+          {historicalTruncated ? " (limited)" : ""}
+        {/if}
+      </div>
     </div>
   </header>
 
@@ -124,6 +261,7 @@
               <th class="px-4 py-3 text-right">New input</th>
               <th class="px-4 py-3 text-right">Cached</th>
               <th class="px-4 py-3 text-right">Generated</th>
+              <th class="px-4 py-3 text-right">Total tokens</th>
               <th class="px-4 py-3 text-right">Cache hit</th>
               <th class="px-4 py-3 text-right">P50 tok/s</th>
               <th class="px-4 py-3 text-right">P95 tok/s</th>
@@ -139,6 +277,7 @@
                 <td class="px-4 py-3 text-right">{number(model.tokens.newInput)}</td>
                 <td class="px-4 py-3 text-right">{number(model.tokens.cached)}</td>
                 <td class="px-4 py-3 text-right">{number(model.tokens.output)}</td>
+                <td class="px-4 py-3 text-right font-semibold text-txtmain">{number(model.tokens.total)}</td>
                 <td class="px-4 py-3 text-right text-[#5794f2]">{cacheRate(model)}</td>
                 <td class="px-4 py-3 text-right text-[#73bf69]">{decimal(model.generationSpeed.p50)}</td>
                 <td class="px-4 py-3 text-right text-[#ff9830]">{decimal(model.generationSpeed.p95)}</td>

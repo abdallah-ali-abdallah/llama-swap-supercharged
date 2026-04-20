@@ -100,6 +100,7 @@ type metricsMonitor struct {
 	maxMetrics int
 	nextID     int
 	logger     *LogMonitor
+	store      *metricsStore
 
 	// capture fields
 	enableCaptures bool
@@ -111,32 +112,74 @@ type metricsMonitor struct {
 
 // newMetricsMonitor creates a new metricsMonitor. captureBufferMB is the
 // capture buffer size in megabytes; 0 disables captures.
-func newMetricsMonitor(logger *LogMonitor, maxMetrics int, captureBufferMB int) *metricsMonitor {
-	return &metricsMonitor{
+func newMetricsMonitor(logger *LogMonitor, maxMetrics int, captureBufferMB int, stores ...*metricsStore) *metricsMonitor {
+	var store *metricsStore
+	if len(stores) > 0 {
+		store = stores[0]
+	}
+
+	mp := &metricsMonitor{
 		logger:         logger,
 		maxMetrics:     maxMetrics,
+		store:          store,
 		enableCaptures: captureBufferMB > 0,
 		captures:       make(map[int][]byte),
 		captureOrder:   make([]int, 0),
 		captureSize:    0,
 		maxCaptureSize: captureBufferMB * 1024 * 1024,
 	}
+
+	if store != nil {
+		if metrics, err := store.latest(maxMetrics); err != nil {
+			if logger != nil {
+				logger.Warnf("failed to load metrics from %s: %v", store.path, err)
+			}
+		} else {
+			mp.metrics = metrics
+		}
+
+		if maxID, err := store.maxID(); err != nil {
+			if logger != nil {
+				logger.Warnf("failed to read max metric id from %s: %v", store.path, err)
+			}
+		} else {
+			mp.nextID = maxID + 1
+		}
+	}
+
+	return mp
 }
 
 // addMetrics adds a new metric to the collection and publishes an event.
 // Returns the assigned metric ID.
 func (mp *metricsMonitor) addMetrics(metric TokenMetrics) int {
 	mp.mu.Lock()
-	defer mp.mu.Unlock()
-
 	metric.ID = mp.nextID
 	mp.nextID++
 	mp.metrics = append(mp.metrics, metric)
 	if len(mp.metrics) > mp.maxMetrics {
 		mp.metrics = mp.metrics[len(mp.metrics)-mp.maxMetrics:]
 	}
+	store := mp.store
+	mp.mu.Unlock()
+
+	if store != nil {
+		if err := store.insert(metric); err != nil && mp.logger != nil {
+			mp.logger.Warnf("failed to persist metric %d: %v", metric.ID, err)
+		}
+	}
+
 	event.Emit(TokenMetricsEvent{Metrics: metric})
 	return metric.ID
+}
+
+func (mp *metricsMonitor) close() {
+	mp.mu.RLock()
+	store := mp.store
+	mp.mu.RUnlock()
+	if store != nil {
+		store.close()
+	}
 }
 
 // addCapture adds a new capture to the buffer with size-based eviction.
@@ -228,9 +271,48 @@ func (mp *metricsMonitor) getMetrics() []TokenMetrics {
 
 // getMetricsJSON returns metrics as JSON
 func (mp *metricsMonitor) getMetricsJSON() ([]byte, error) {
+	return json.Marshal(mp.getMetrics())
+}
+
+func (mp *metricsMonitor) getMetricsForRange(q metricsQuery) ([]TokenMetrics, bool, error) {
 	mp.mu.RLock()
-	defer mp.mu.RUnlock()
-	return json.Marshal(mp.metrics)
+	store := mp.store
+	mp.mu.RUnlock()
+
+	if store != nil {
+		return store.query(q)
+	}
+
+	metrics := mp.getMetrics()
+	filtered := make([]TokenMetrics, 0, len(metrics))
+	for _, metric := range metrics {
+		if q.From != nil && metric.Timestamp.Before(*q.From) {
+			continue
+		}
+		if q.To != nil && metric.Timestamp.After(*q.To) {
+			continue
+		}
+		filtered = append(filtered, metric)
+	}
+
+	limit := q.Limit
+	if limit <= 0 {
+		limit = defaultMetricsQueryMaxRows
+	}
+	truncated := len(filtered) > limit
+	if truncated {
+		filtered = filtered[:limit]
+	}
+	return filtered, truncated, nil
+}
+
+func (mp *metricsMonitor) getMetricsForRangeJSON(q metricsQuery) ([]byte, bool, error) {
+	metrics, truncated, err := mp.getMetricsForRange(q)
+	if err != nil {
+		return nil, false, err
+	}
+	jsonData, err := json.Marshal(metrics)
+	return jsonData, truncated, err
 }
 
 // wrapHandler wraps the proxy handler to extract token metrics

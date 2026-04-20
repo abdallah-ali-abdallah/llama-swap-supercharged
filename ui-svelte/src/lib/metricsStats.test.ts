@@ -57,6 +57,7 @@ describe("metricsStats", () => {
 
     expect(stats.tokens.cached).toBe(20);
     expect(stats.tokens.totalInput).toBe(150);
+    expect(stats.tokens.total).toBe(165);
     expect(stats.tokens.cacheHitRate).toBeCloseTo(20 / 150);
   });
 
@@ -69,7 +70,7 @@ describe("metricsStats", () => {
 
     expect(stats.models.map((modelStats) => modelStats.model)).toEqual(["model-c", "model-b", "model-a"]);
     expect(stats.models.find((modelStats) => modelStats.model === "model-a")?.tokens.output).toBe(50);
+    expect(stats.models.find((modelStats) => modelStats.model === "model-a")?.tokens.total).toBe(150);
     expect(stats.models).toHaveLength(3);
   });
 });
-

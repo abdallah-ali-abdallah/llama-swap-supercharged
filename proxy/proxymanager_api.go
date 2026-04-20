@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mostlygeek/llama-swap/event"
@@ -239,12 +240,133 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 }
 
 func (pm *ProxyManager) apiGetMetrics(c *gin.Context) {
-	jsonData, err := pm.metricsMonitor.getMetricsJSON()
+	rangeName := strings.TrimSpace(c.Query("range"))
+	if rangeName == "" || rangeName == "realtime" {
+		jsonData, err := pm.metricsMonitor.getMetricsJSON()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
+			return
+		}
+		c.Header("X-Metrics-Range", "realtime")
+		c.Header("X-Metrics-Truncated", "false")
+		c.Data(http.StatusOK, "application/json", jsonData)
+		return
+	}
+
+	query, normalizedRange, err := pm.parseMetricsRangeQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	jsonData, truncated, err := pm.metricsMonitor.getMetricsForRangeJSON(query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
 		return
 	}
+	c.Header("X-Metrics-Range", normalizedRange)
+	c.Header("X-Metrics-Truncated", strconv.FormatBool(truncated))
 	c.Data(http.StatusOK, "application/json", jsonData)
+}
+
+func (pm *ProxyManager) parseMetricsRangeQuery(c *gin.Context) (metricsQuery, string, error) {
+	limit := metricsLimit(c.Query("limit"), pm.config.MetricsQueryMaxRows)
+	now := time.Now()
+	rangeName := strings.ToLower(strings.TrimSpace(c.Query("range")))
+	query := metricsQuery{Limit: limit}
+
+	setFrom := func(duration time.Duration) {
+		from := now.Add(-duration)
+		query.From = &from
+	}
+
+	switch rangeName {
+	case "5m", "past_5m", "past-5m", "past_5min", "past-5min":
+		setFrom(5 * time.Minute)
+		return query, "5m", nil
+	case "10m", "past_10m", "past-10m", "past_10min", "past-10min":
+		setFrom(10 * time.Minute)
+		return query, "10m", nil
+	case "1h", "past_1h", "past-1h", "past_hour":
+		setFrom(time.Hour)
+		return query, "1h", nil
+	case "8h", "past_8h", "past-8h":
+		setFrom(8 * time.Hour)
+		return query, "8h", nil
+	case "1d", "24h", "day", "past_day":
+		setFrom(24 * time.Hour)
+		return query, "1d", nil
+	case "1w", "week", "past_week":
+		setFrom(7 * 24 * time.Hour)
+		return query, "1w", nil
+	case "1mo", "month", "past_month":
+		setFrom(30 * 24 * time.Hour)
+		return query, "1mo", nil
+	case "all":
+		return query, "all", nil
+	case "custom":
+		from, hasFrom, err := parseMetricRangeTime(c.Query("from"))
+		if err != nil {
+			return metricsQuery{}, "", fmt.Errorf("invalid from: %w", err)
+		}
+		to, hasTo, err := parseMetricRangeTime(c.Query("to"))
+		if err != nil {
+			return metricsQuery{}, "", fmt.Errorf("invalid to: %w", err)
+		}
+		if !hasFrom && !hasTo {
+			return metricsQuery{}, "", fmt.Errorf("custom range requires from or to")
+		}
+		if hasFrom {
+			query.From = &from
+		}
+		if hasTo {
+			query.To = &to
+		}
+		if hasFrom && hasTo && from.After(to) {
+			return metricsQuery{}, "", fmt.Errorf("from must be before to")
+		}
+		return query, "custom", nil
+	default:
+		return metricsQuery{}, "", fmt.Errorf("unsupported metrics range %q", rangeName)
+	}
+}
+
+func metricsLimit(value string, configuredMax int) int {
+	if configuredMax <= 0 {
+		configuredMax = defaultMetricsQueryMaxRows
+	}
+	if strings.TrimSpace(value) == "" {
+		return configuredMax
+	}
+
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return configuredMax
+	}
+	if limit > configuredMax {
+		return configuredMax
+	}
+	return limit
+}
+
+func parseMetricRangeTime(value string) (time.Time, bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false, nil
+	}
+
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed, true, nil
+	}
+
+	unixValue, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if unixValue > 1_000_000_000_000 {
+		return time.UnixMilli(unixValue), true, nil
+	}
+	return time.Unix(unixValue, 0), true, nil
 }
 
 func (pm *ProxyManager) apiUnloadSingleModelHandler(c *gin.Context) {
