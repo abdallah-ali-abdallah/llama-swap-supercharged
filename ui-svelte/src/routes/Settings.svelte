@@ -20,14 +20,14 @@
     loading = false;
   }
 
-  async function saveSettings(): Promise<void> {
+  async function persistSettings(successMessage = "Settings saved."): Promise<void> {
     if (!settings) return;
     saving = true;
     message = "";
     error = "";
     try {
       settings = await updatePersistenceSettings(settings);
-      message = "Settings saved.";
+      message = successMessage;
     } catch (err) {
       error = err instanceof Error ? err.message : "Unable to save persistence settings.";
     } finally {
@@ -35,34 +35,44 @@
     }
   }
 
+  async function saveSettings(): Promise<void> {
+    await persistSettings();
+  }
+
   function toggleUsage(): void {
     if (!settings) return;
     settings.usage_metrics_persistence = !settings.usage_metrics_persistence;
+    void persistSettings("Setting saved.");
   }
 
   function toggleLogging(): void {
     if (!settings) return;
     settings.logging_enabled = !settings.logging_enabled;
+    void persistSettings("Setting saved.");
   }
 
   function toggleActivity(): void {
     if (!settings) return;
     settings.activity_persistence = !settings.activity_persistence;
+    void persistSettings("Setting saved.");
   }
 
   function toggleCapture(): void {
     if (!settings) return;
     settings.activity_capture_persistence = !settings.activity_capture_persistence;
+    void persistSettings("Setting saved.");
   }
 
   function toggleCaptureRedaction(): void {
     if (!settings) return;
     settings.capture_redact_headers = !settings.capture_redact_headers;
+    void persistSettings("Setting saved.");
   }
 
   function toggleActivityField(field: keyof PersistenceSettings["activity_fields"]): void {
     if (!settings) return;
     settings.activity_fields[field] = !settings.activity_fields[field];
+    void persistSettings("Setting saved.");
   }
 
   onMount(() => {
