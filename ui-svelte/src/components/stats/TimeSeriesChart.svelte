@@ -6,17 +6,21 @@
     series: ChartSeries[];
     unit?: string;
     height?: number;
+    toggleableLegend?: boolean;
   }
 
-  let { title, series, unit = "", height = 220 }: Props = $props();
+  let { title, series, unit = "", height = 220, toggleableLegend = false }: Props = $props();
 
   const width = 720;
   const padding = { top: 22, right: 18, bottom: 34, left: 54 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = $derived(height - padding.top - padding.bottom);
 
-  let validPoints = $derived(series.flatMap((item) => item.points.filter((point) => point.y !== null)));
+  let hiddenSeries = $state<string[]>([]);
+  let visibleSeries = $derived(series.filter((item) => !hiddenSeries.includes(item.label)));
+  let validPoints = $derived(visibleSeries.flatMap((item) => item.points.filter((point) => point.y !== null)));
   let hasData = $derived(validPoints.length > 0);
+  let hasVisibleSeries = $derived(visibleSeries.length > 0);
   let xMin = $derived(hasData ? Math.min(...validPoints.map((point) => point.x)) : 0);
   let xMax = $derived(hasData ? Math.max(...validPoints.map((point) => point.x)) : 1);
   let yMin = $derived(hasData ? Math.min(0, ...validPoints.map((point) => point.y || 0)) : 0);
@@ -67,6 +71,23 @@
     if (value < 1_000_000_000_000) return String(value);
     return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
   }
+
+  function toggleSeries(label: string): void {
+    if (hiddenSeries.includes(label)) {
+      hiddenSeries = hiddenSeries.filter((hiddenLabel) => hiddenLabel !== label);
+      return;
+    }
+
+    hiddenSeries = [...hiddenSeries, label];
+  }
+
+  $effect(() => {
+    const labels = series.map((item) => item.label);
+    const nextHiddenSeries = hiddenSeries.filter((label) => labels.includes(label));
+    if (nextHiddenSeries.length !== hiddenSeries.length) {
+      hiddenSeries = nextHiddenSeries;
+    }
+  });
 </script>
 
 <section class="rounded-lg border border-card-border bg-surface p-4 shadow-sm">
@@ -74,10 +95,25 @@
     <h2 class="p-0 text-sm font-semibold text-txtmain">{title}</h2>
     <div class="flex flex-wrap justify-end gap-x-3 gap-y-1 text-xs text-txtsecondary">
       {#each series as item (item.label)}
-        <span class="inline-flex items-center gap-1.5">
-          <span class="h-2 w-2 rounded-full" style:background={item.color}></span>
-          {item.label}
-        </span>
+        {@const visible = !hiddenSeries.includes(item.label)}
+        {#if toggleableLegend}
+          <button
+            type="button"
+            onclick={() => toggleSeries(item.label)}
+            aria-pressed={visible}
+            class={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition ${
+              visible ? "text-txtmain hover:bg-secondary" : "text-txtsecondary opacity-55 hover:bg-secondary hover:opacity-80"
+            }`}
+          >
+            <span class="h-2 w-2 rounded-full" style:background={item.color} style:opacity={visible ? 1 : 0.35}></span>
+            <span class={visible ? "" : "line-through"}>{item.label}</span>
+          </button>
+        {:else}
+          <span class="inline-flex items-center gap-1.5">
+            <span class="h-2 w-2 rounded-full" style:background={item.color}></span>
+            {item.label}
+          </span>
+        {/if}
       {/each}
     </div>
   </div>
@@ -102,7 +138,7 @@
         </text>
       {/each}
 
-      {#each series as item (item.label)}
+      {#each visibleSeries as item (item.label)}
         {@const area = areaPath(item)}
         {@const path = linePath(item)}
         {#if area}
@@ -120,7 +156,7 @@
     </svg>
   {:else}
     <div class="flex h-[180px] items-center justify-center rounded-md border border-dashed border-card-border-inner text-sm text-txtsecondary">
-      No data yet
+      {hasVisibleSeries ? "No data yet" : "Select a series to show"}
     </div>
   {/if}
 </section>
