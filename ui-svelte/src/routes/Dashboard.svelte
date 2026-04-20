@@ -141,7 +141,7 @@
             onclick={() => (selectedRange = option.value)}
             class={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
               selectedRange === option.value
-                ? "border-[#5794f2] bg-[#5794f2]/20 text-[#cfe2ff]"
+                ? "border-[#5794f2] bg-[#5794f2]/20 text-[#174a8b] dark:text-[#cfe2ff]"
                 : "border-card-border bg-surface text-txtsecondary hover:border-card-border-inner hover:text-txtmain"
             }`}
           >
