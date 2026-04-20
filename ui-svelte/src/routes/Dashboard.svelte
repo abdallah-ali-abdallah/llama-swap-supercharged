@@ -228,10 +228,10 @@
   </section>
 
   <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-    <TimeSeriesChart title="Generated Tokens" series={dashboard.series.tokenVolume} unit="tokens" toggleableLegend curve="smooth" />
-    <TimeSeriesChart title="Generation Speed" series={dashboard.series.generationSpeed} unit="tok/s" curve="smooth" />
-    <TimeSeriesChart title="Prompt Processing Speed" series={dashboard.series.promptSpeed} unit="tok/s" curve="smooth" />
-    <TimeSeriesChart title="Request Duration" series={dashboard.series.duration} unit="s" valueFractionDigits={3} curve="smooth" />
+    <TimeSeriesChart title="Generated Tokens" series={dashboard.series.tokenVolume} unit="tokens" toggleableLegend curve="smooth" smoothSamples />
+    <TimeSeriesChart title="Generation Speed" series={dashboard.series.generationSpeed} unit="tok/s" curve="smooth" smoothSamples />
+    <TimeSeriesChart title="Prompt Processing Speed" series={dashboard.series.promptSpeed} unit="tok/s" curve="smooth" smoothSamples />
+    <TimeSeriesChart title="Request Duration" series={dashboard.series.duration} unit="s" valueFractionDigits={3} curve="smooth" smoothSamples />
   </section>
 
   <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">

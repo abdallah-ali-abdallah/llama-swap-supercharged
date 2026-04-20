@@ -5,6 +5,11 @@ export interface PositionedChartPoint {
   y: number | null;
 }
 
+export interface PointSmoothingOptions {
+  bucketSize: number;
+  windowSize: number;
+}
+
 function coordinate(value: number): string {
   return value.toFixed(2);
 }
@@ -36,6 +41,81 @@ export function validPointSegments(points: PositionedChartPoint[]): Array<Array<
   if (segment.length > 0) segments.push(segment);
 
   return segments;
+}
+
+function validPointRuns(points: PositionedChartPoint[]): Array<Array<{ x: number; y: number }>> {
+  const runs: Array<Array<{ x: number; y: number }>> = [];
+  let run: Array<{ x: number; y: number }> = [];
+
+  for (const point of points) {
+    if (!isValidPoint(point)) {
+      if (run.length > 0) runs.push(run);
+      run = [];
+      continue;
+    }
+
+    run.push(point);
+  }
+
+  if (run.length > 0) runs.push(run);
+
+  return runs;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const midpoint = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 1) return sorted[midpoint];
+  return (sorted[midpoint - 1] + sorted[midpoint]) / 2;
+}
+
+function bucketPoints(points: Array<{ x: number; y: number }>, bucketSize: number): Array<{ x: number; y: number }> {
+  if (points.length === 0 || bucketSize <= 0) return points;
+
+  const buckets: Array<Array<{ x: number; y: number }>> = [];
+  let bucket: Array<{ x: number; y: number }> = [];
+  let bucketStart = points[0].x;
+
+  for (const point of points) {
+    if (bucket.length > 0 && point.x - bucketStart > bucketSize) {
+      buckets.push(bucket);
+      bucket = [];
+      bucketStart = point.x;
+    }
+
+    bucket.push(point);
+  }
+
+  if (bucket.length > 0) buckets.push(bucket);
+
+  return buckets.map((bucket) => ({
+    x: bucket.reduce((sum, point) => sum + point.x, 0) / bucket.length,
+    y: median(bucket.map((point) => point.y)),
+  }));
+}
+
+function movingAverage(points: Array<{ x: number; y: number }>, windowSize: number): Array<{ x: number; y: number }> {
+  const boundedWindowSize = Math.max(1, Math.floor(windowSize));
+  if (points.length < 3 || boundedWindowSize < 2) return points;
+
+  const radius = Math.floor(boundedWindowSize / 2);
+
+  return points.map((point, index) => {
+    const start = Math.max(0, index - radius);
+    const end = Math.min(points.length, index + radius + 1);
+    const sample = points.slice(start, end);
+    const y = sample.reduce((sum, point) => sum + point.y, 0) / sample.length;
+
+    return { ...point, y };
+  });
+}
+
+export function smoothedPointSegments(points: PositionedChartPoint[], options: PointSmoothingOptions): Array<Array<{ x: number; y: number }>> {
+  return validPointRuns(points)
+    .map((run) => bucketPoints(run, options.bucketSize))
+    .map((run) => movingAverage(run, options.windowSize))
+    .flatMap(validPointSegments);
 }
 
 export function linearPath(points: Array<{ x: number; y: number }>): string {

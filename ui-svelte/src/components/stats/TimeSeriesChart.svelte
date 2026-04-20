@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ChartSeries } from "../../lib/metricsStats";
-  import { chartAreaPath, chartPath, validPointSegments } from "../../lib/chartPaths";
-  import type { CurveMode, PositionedChartPoint } from "../../lib/chartPaths";
+  import { chartAreaPath, chartPath, smoothedPointSegments, validPointSegments } from "../../lib/chartPaths";
+  import type { CurveMode } from "../../lib/chartPaths";
 
   interface Props {
     title: string;
@@ -11,9 +11,23 @@
     toggleableLegend?: boolean;
     valueFractionDigits?: number;
     curve?: CurveMode;
+    smoothSamples?: boolean;
+    sampleBucketSize?: number;
+    sampleSmoothingWindow?: number;
   }
 
-  let { title, series, unit = "", height = 220, toggleableLegend = false, valueFractionDigits, curve = "linear" }: Props = $props();
+  let {
+    title,
+    series,
+    unit = "",
+    height = 220,
+    toggleableLegend = false,
+    valueFractionDigits,
+    curve = "linear",
+    smoothSamples = false,
+    sampleBucketSize = 12,
+    sampleSmoothingWindow = 5,
+  }: Props = $props();
 
   const width = 720;
   const padding = { top: 22, right: 18, bottom: 34, left: 54 };
@@ -22,15 +36,27 @@
 
   let hiddenSeries = $state<string[]>([]);
   let visibleSeries = $derived(series.filter((item) => !hiddenSeries.includes(item.label)));
-  let validPoints = $derived(visibleSeries.flatMap((item) => item.points.filter((point) => point.y !== null)));
-  let hasData = $derived(validPoints.length > 0);
+  let rawValidPoints = $derived(visibleSeries.flatMap((item) => item.points.filter((point) => point.y !== null)));
+  let hasData = $derived(rawValidPoints.length > 0);
   let hasVisibleSeries = $derived(visibleSeries.length > 0);
-  let xMin = $derived(hasData ? Math.min(...validPoints.map((point) => point.x)) : 0);
-  let xMax = $derived(hasData ? Math.max(...validPoints.map((point) => point.x)) : 1);
-  let yMin = $derived(hasData ? Math.min(0, ...validPoints.map((point) => point.y || 0)) : 0);
-  let yMax = $derived(hasData ? Math.max(...validPoints.map((point) => point.y || 0)) : 1);
-  let yRange = $derived(yMax === yMin ? 1 : yMax - yMin);
+  let xMin = $derived(hasData ? Math.min(...rawValidPoints.map((point) => point.x)) : 0);
+  let xMax = $derived(hasData ? Math.max(...rawValidPoints.map((point) => point.x)) : 1);
   let xRange = $derived(xMax === xMin ? 1 : xMax - xMin);
+  let sampleBucketRange = $derived((sampleBucketSize / chartWidth) * xRange);
+  let displaySegments = $derived(
+    new Map(
+      visibleSeries.map((item) => [
+        item.label,
+        smoothSamples
+          ? smoothedPointSegments(item.points, { bucketSize: sampleBucketRange, windowSize: sampleSmoothingWindow })
+          : validPointSegments(item.points),
+      ]),
+    ),
+  );
+  let displayPoints = $derived([...displaySegments.values()].flat(2));
+  let yMin = $derived(displayPoints.length > 0 ? Math.min(0, ...displayPoints.map((point) => point.y)) : 0);
+  let yMax = $derived(displayPoints.length > 0 ? Math.max(...displayPoints.map((point) => point.y)) : 1);
+  let yRange = $derived(yMax === yMin ? 1 : yMax - yMin);
 
   function xPos(x: number): number {
     return padding.left + ((x - xMin) / xRange) * chartWidth;
@@ -41,12 +67,16 @@
   }
 
   function positionedSegments(item: ChartSeries): Array<Array<{ x: number; y: number }>> {
-    const points: PositionedChartPoint[] = item.points.map((point) => ({
-      x: xPos(point.x),
-      y: point.y === null ? null : yPos(point.y),
-    }));
+    return (displaySegments.get(item.label) || []).map((segment) =>
+      segment.map((point) => ({
+        x: xPos(point.x),
+        y: yPos(point.y),
+      })),
+    );
+  }
 
-    return validPointSegments(points);
+  function displayPointsFor(item: ChartSeries): Array<{ x: number; y: number }> {
+    return (displaySegments.get(item.label) || []).flat();
   }
 
   function formatNumber(value: number): string {
@@ -151,7 +181,7 @@
             <path d={path} fill="none" stroke={item.color} stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
           {/if}
         {/each}
-        {#each item.points.filter((point) => point.y !== null).slice(-36) as point}
+        {#each displayPointsFor(item).slice(-36) as point}
           <circle cx={xPos(point.x)} cy={yPos(point.y || 0)} r="3" fill={item.color} opacity="0.85">
             <title>{`${item.label}: ${formatNumber(point.y || 0)}${unit ? ` ${unit}` : ""}`}</title>
           </circle>

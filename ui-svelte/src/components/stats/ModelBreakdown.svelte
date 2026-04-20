@@ -58,9 +58,9 @@
   <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
     <TokenComposition title="Token Consumption" tokens={summary.tokens} />
     <HistogramChart title="Generation Speed Distribution" bins={summary.histogram} percentiles={summary.generationSpeed} unit="tok/s" />
-    <TimeSeriesChart title="Token Volume" series={series.tokenVolume} unit="tokens" curve="smooth" />
-    <TimeSeriesChart title="Generation Speed" series={series.generationSpeed} unit="tok/s" curve="smooth" />
-    <TimeSeriesChart title="Prompt Processing Speed" series={series.promptSpeed} unit="tok/s" curve="smooth" />
-    <TimeSeriesChart title="Request Duration" series={series.duration} unit="s" valueFractionDigits={3} curve="smooth" />
+    <TimeSeriesChart title="Token Volume" series={series.tokenVolume} unit="tokens" curve="smooth" smoothSamples />
+    <TimeSeriesChart title="Generation Speed" series={series.generationSpeed} unit="tok/s" curve="smooth" smoothSamples />
+    <TimeSeriesChart title="Prompt Processing Speed" series={series.promptSpeed} unit="tok/s" curve="smooth" smoothSamples />
+    <TimeSeriesChart title="Request Duration" series={series.duration} unit="s" valueFractionDigits={3} curve="smooth" smoothSamples />
   </div>
 </section>
