@@ -4,6 +4,7 @@
   import Header from "./components/Header.svelte";
   import LogViewer from "./routes/LogViewer.svelte";
   import Models from "./routes/Models.svelte";
+  import Dashboard from "./routes/Dashboard.svelte";
   import Activity from "./routes/Activity.svelte";
   import Playground from "./routes/Playground.svelte";
   import PlaygroundStub from "./routes/PlaygroundStub.svelte";
@@ -14,6 +15,8 @@
   const routes = {
     "/": PlaygroundStub,
     "/models": Models,
+    "/dashboard": Dashboard,
+    "/stats": Dashboard,
     "/logs": LogViewer,
     "/activity": Activity,
     "*": PlaygroundStub,

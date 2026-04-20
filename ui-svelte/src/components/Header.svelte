@@ -71,6 +71,14 @@
       Activity
     </a>
     <a
+      href="/dashboard"
+      use:link
+      class="text-gray-600 hover:text-black dark:text-gray-300 dark:hover:text-gray-100 p-1 whitespace-nowrap"
+      class:font-semibold={isActive("/dashboard", $currentRoute) || isActive("/stats", $currentRoute)}
+    >
+      Dashboard
+    </a>
+    <a
       href="/logs"
       use:link
       class="text-gray-600 hover:text-black dark:text-gray-300 dark:hover:text-gray-100 p-1 whitespace-nowrap"
