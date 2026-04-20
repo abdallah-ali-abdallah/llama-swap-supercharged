@@ -49,6 +49,12 @@ describe("metricsStats", () => {
     expect(stats.generationSpeed.p50).toBe(20);
   });
 
+  test("converts duration chart series to seconds", () => {
+    const stats = summarizeDashboard([metric({ duration_ms: 1234 })]);
+
+    expect(stats.series.duration[0].points[0].y).toBe(1.234);
+  });
+
   test("computes cache hit rate with unknown cache values", () => {
     const stats = summarizeDashboard([
       metric({ new_input_tokens: 80, cache_tokens: 20, output_tokens: 10 }),

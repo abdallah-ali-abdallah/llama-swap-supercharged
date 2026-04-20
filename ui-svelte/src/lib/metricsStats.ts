@@ -275,7 +275,7 @@ function globalSeries(metrics: Metrics[]): DashboardStats["series"] {
     ],
     generationSpeed: [lineSeries(metrics, "Generated tok/sec", SERIES_COLORS.generationSpeed, generationSpeed)],
     promptSpeed: [lineSeries(metrics, "Prompt tok/sec", SERIES_COLORS.promptSpeed, promptSpeed)],
-    duration: [lineSeries(metrics, "Duration", SERIES_COLORS.duration, (metric) => (metric.duration_ms > 0 ? metric.duration_ms : null))],
+    duration: [lineSeries(metrics, "Duration", SERIES_COLORS.duration, (metric) => (metric.duration_ms > 0 ? metric.duration_ms / 1000 : null))],
   };
 }
 
@@ -293,4 +293,3 @@ export function summarizeDashboard(metrics: Metrics[], inFlight = 0): DashboardS
     ...baseSummary(ordered, inFlight),
   };
 }
-

@@ -7,9 +7,10 @@
     unit?: string;
     height?: number;
     toggleableLegend?: boolean;
+    valueFractionDigits?: number;
   }
 
-  let { title, series, unit = "", height = 220, toggleableLegend = false }: Props = $props();
+  let { title, series, unit = "", height = 220, toggleableLegend = false, valueFractionDigits }: Props = $props();
 
   const width = 720;
   const padding = { top: 22, right: 18, bottom: 34, left: 54 };
@@ -61,6 +62,13 @@
   }
 
   function formatNumber(value: number): string {
+    if (valueFractionDigits !== undefined) {
+      return value.toLocaleString(undefined, {
+        minimumFractionDigits: valueFractionDigits,
+        maximumFractionDigits: valueFractionDigits,
+      });
+    }
+
     if (value >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
     if (value >= 100) return value.toFixed(0);
     if (value >= 10) return value.toFixed(1);
@@ -72,13 +80,15 @@
     return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
   }
 
-  function toggleSeries(label: string): void {
-    if (hiddenSeries.includes(label)) {
+  function setSeriesVisible(label: string, visible: boolean): void {
+    if (visible) {
       hiddenSeries = hiddenSeries.filter((hiddenLabel) => hiddenLabel !== label);
       return;
     }
 
-    hiddenSeries = [...hiddenSeries, label];
+    if (!hiddenSeries.includes(label)) {
+      hiddenSeries = [...hiddenSeries, label];
+    }
   }
 
   $effect(() => {
@@ -97,17 +107,21 @@
       {#each series as item (item.label)}
         {@const visible = !hiddenSeries.includes(item.label)}
         {#if toggleableLegend}
-          <button
-            type="button"
-            onclick={() => toggleSeries(item.label)}
-            aria-pressed={visible}
+          <label
             class={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition ${
               visible ? "text-txtmain hover:bg-secondary" : "text-txtsecondary opacity-55 hover:bg-secondary hover:opacity-80"
             }`}
           >
+            <input
+              type="checkbox"
+              checked={visible}
+              onchange={(event) => setSeriesVisible(item.label, event.currentTarget.checked)}
+              class="h-3.5 w-3.5 rounded border-card-border bg-surface"
+              style={`accent-color: ${item.color}`}
+            />
             <span class="h-2 w-2 rounded-full" style:background={item.color} style:opacity={visible ? 1 : 0.35}></span>
             <span class={visible ? "" : "line-through"}>{item.label}</span>
-          </button>
+          </label>
         {:else}
           <span class="inline-flex items-center gap-1.5">
             <span class="h-2 w-2 rounded-full" style:background={item.color}></span>

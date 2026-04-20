@@ -22,7 +22,7 @@
   }
 
   function duration(value: number): string {
-    return value > 0 ? `${(value / 1000).toFixed(2)}s` : "0.00s";
+    return value > 0 ? `${(value / 1000).toFixed(3)}s` : "0.000s";
   }
 </script>
 
@@ -61,6 +61,6 @@
     <TimeSeriesChart title="Token Volume" series={series.tokenVolume} unit="tokens" />
     <TimeSeriesChart title="Generation Speed" series={series.generationSpeed} unit="tok/s" />
     <TimeSeriesChart title="Prompt Processing Speed" series={series.promptSpeed} unit="tok/s" />
-    <TimeSeriesChart title="Request Duration" series={series.duration} unit="ms" />
+    <TimeSeriesChart title="Request Duration" series={series.duration} unit="s" valueFractionDigits={3} />
   </div>
 </section>

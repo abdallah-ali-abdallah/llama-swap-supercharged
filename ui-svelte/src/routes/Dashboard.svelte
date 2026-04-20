@@ -44,7 +44,7 @@
   }
 
   function duration(ms: number): string {
-    return ms > 0 ? `${(ms / 1000).toFixed(2)}s` : "0.00s";
+    return ms > 0 ? `${(ms / 1000).toFixed(3)}s` : "0.000s";
   }
 
   function cacheRate(model: ModelMetricSummary): string {
@@ -231,7 +231,7 @@
     <TimeSeriesChart title="Generated Tokens" series={dashboard.series.tokenVolume} unit="tokens" toggleableLegend />
     <TimeSeriesChart title="Generation Speed" series={dashboard.series.generationSpeed} unit="tok/s" />
     <TimeSeriesChart title="Prompt Processing Speed" series={dashboard.series.promptSpeed} unit="tok/s" />
-    <TimeSeriesChart title="Request Duration" series={dashboard.series.duration} unit="ms" />
+    <TimeSeriesChart title="Request Duration" series={dashboard.series.duration} unit="s" valueFractionDigits={3} />
   </section>
 
   <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">
