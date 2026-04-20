@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ var (
 	portMutex           sync.Mutex
 	testLogger          = NewLogMonitorWriter(os.Stdout)
 	simpleResponderPath = getSimpleResponderPath()
+	startPortRegex      = regexp.MustCompile(`(?m)^\s*startPort\s*:`)
 )
 
 // Check if the binary exists
@@ -73,11 +75,24 @@ func getTestPort() int {
 	return port
 }
 
+func getTestPortBlock() int {
+	portMutex.Lock()
+	defer portMutex.Unlock()
+
+	port := nextTestPort
+	nextTestPort += 25
+
+	return port
+}
+
 // testConfigFromYAML substitutes {{RESPONDER}} with the simple-responder path and
 // loads through the real config pipeline (env vars, macros, port assignment, etc.)
 func testConfigFromYAML(t *testing.T, yamlTmpl string) config.Config {
 	t.Helper()
 	yamlStr := strings.ReplaceAll(yamlTmpl, "{{RESPONDER}}", filepath.ToSlash(simpleResponderPath))
+	if !startPortRegex.MatchString(yamlStr) {
+		yamlStr = fmt.Sprintf("startPort: %d\n%s", getTestPortBlock(), yamlStr)
+	}
 	cfg, err := config.LoadConfigFromReader(strings.NewReader(yamlStr))
 	require.NoError(t, err)
 	return cfg
