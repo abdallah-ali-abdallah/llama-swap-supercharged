@@ -16,6 +16,16 @@
     sampleSmoothingWindow?: number;
   }
 
+  interface HoverPoint {
+    x: number;
+    y: number;
+    color: string;
+    typeLabel: string;
+    valueLabel: string;
+    timeLabel: string;
+    width: number;
+  }
+
   let {
     title,
     series,
@@ -35,6 +45,7 @@
   const chartHeight = $derived(height - padding.top - padding.bottom);
 
   let hiddenSeries = $state<string[]>([]);
+  let hoverPoint = $state<HoverPoint | null>(null);
   let visibleSeries = $derived(series.filter((item) => !hiddenSeries.includes(item.label)));
   let rawValidPoints = $derived(visibleSeries.flatMap((item) => item.points.filter((point) => point.y !== null)));
   let hasData = $derived(rawValidPoints.length > 0);
@@ -96,6 +107,48 @@
   function formatTime(value: number): string {
     if (value < 1_000_000_000_000) return String(value);
     return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+  }
+
+  function pointLabel(item: ChartSeries, value: number): string {
+    return `${item.label}: ${formatNumber(value)}${unit ? ` ${unit}` : ""}`;
+  }
+
+  function pointTooltipWidth(label: string): number {
+    return Math.max(96, Math.min(230, label.length * 7 + 18));
+  }
+
+  function pointTooltipHeight(): number {
+    return 55;
+  }
+
+  function tooltipX(point: HoverPoint): number {
+    return Math.max(padding.left, Math.min(width - padding.right - point.width, point.x + 10));
+  }
+
+  function tooltipY(point: HoverPoint): number {
+    const tooltipHeight = pointTooltipHeight();
+    const above = point.y - tooltipHeight - 10;
+    if (above >= padding.top) return above;
+    return Math.min(padding.top + chartHeight - tooltipHeight, point.y + 14);
+  }
+
+  function showPointTooltip(item: ChartSeries, point: { x: number; y: number }): void {
+    const typeLabel = `Type: ${item.label}`;
+    const valueLabel = `Value: ${formatNumber(point.y)}${unit ? ` ${unit}` : ""}`;
+    const timeLabel = `Captured: ${formatTime(point.x)}`;
+    hoverPoint = {
+      x: xPos(point.x),
+      y: yPos(point.y),
+      color: item.color,
+      typeLabel,
+      valueLabel,
+      timeLabel,
+      width: Math.max(pointTooltipWidth(typeLabel), pointTooltipWidth(valueLabel), pointTooltipWidth(timeLabel)),
+    };
+  }
+
+  function hidePointTooltip(): void {
+    hoverPoint = null;
   }
 
   function setSeriesVisible(label: string, visible: boolean): void {
@@ -182,11 +235,44 @@
           {/if}
         {/each}
         {#each displayPointsFor(item).slice(-36) as point}
-          <circle cx={xPos(point.x)} cy={yPos(point.y || 0)} r="3" fill={item.color} opacity="0.85">
-            <title>{`${item.label}: ${formatNumber(point.y || 0)}${unit ? ` ${unit}` : ""}`}</title>
+          <circle
+            cx={xPos(point.x)}
+            cy={yPos(point.y || 0)}
+            r="3"
+            fill={item.color}
+            opacity="0.85"
+            role="img"
+            aria-label={pointLabel(item, point.y || 0)}
+            class="cursor-crosshair"
+            onpointerenter={() => showPointTooltip(item, point)}
+            onpointerleave={hidePointTooltip}
+          >
+            <title>{pointLabel(item, point.y || 0)}</title>
           </circle>
         {/each}
       {/each}
+
+      {#if hoverPoint}
+        <g class="pointer-events-none" data-chart-tooltip>
+          <line
+            x1={hoverPoint.x}
+            x2={hoverPoint.x}
+            y1={padding.top}
+            y2={padding.top + chartHeight}
+            stroke={hoverPoint.color}
+            stroke-dasharray="4 4"
+            opacity="0.38"
+          />
+          <circle cx={hoverPoint.x} cy={hoverPoint.y} r="5.5" fill="none" stroke={hoverPoint.color} stroke-width="2" />
+          <g transform={`translate(${tooltipX(hoverPoint).toFixed(2)} ${tooltipY(hoverPoint).toFixed(2)})`}>
+            <rect width={hoverPoint.width} height={pointTooltipHeight()} rx="4" fill="var(--color-surface)" stroke="var(--color-card-border)" />
+            <circle cx="10" cy="13" r="3" fill={hoverPoint.color} />
+            <text x="18" y="16" class="fill-txtmain text-[11px] font-semibold">{hoverPoint.typeLabel}</text>
+            <text x="18" y="31" class="fill-txtmain text-[11px]">{hoverPoint.valueLabel}</text>
+            <text x="18" y="46" class="fill-txtsecondary text-[11px]">{hoverPoint.timeLabel}</text>
+          </g>
+        </g>
+      {/if}
     </svg>
   {:else}
     <div class="flex h-[180px] items-center justify-center rounded-md border border-dashed border-card-border-inner text-sm text-txtsecondary">

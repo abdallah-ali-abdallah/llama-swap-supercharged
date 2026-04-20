@@ -56,6 +56,10 @@ export interface MetricSummary {
 
 export interface ModelMetricSummary extends MetricSummary {
   model: string;
+  share: {
+    totalTokens: number;
+    generatedTokens: number;
+  };
 }
 
 export interface DashboardStats extends MetricSummary {
@@ -248,6 +252,7 @@ function baseSummary(metrics: Metrics[], inFlight: number): MetricSummary {
 
 function modelSummaries(metrics: Metrics[]): ModelMetricSummary[] {
   const groups = new Map<string, Metrics[]>();
+  const globalTotals = totalsFor(metrics);
 
   for (const metric of metrics) {
     const model = metric.model || "unknown";
@@ -255,10 +260,17 @@ function modelSummaries(metrics: Metrics[]): ModelMetricSummary[] {
   }
 
   return [...groups.entries()]
-    .map(([model, groupedMetrics]) => ({
-      model,
-      ...baseSummary(groupedMetrics, 0),
-    }))
+    .map(([model, groupedMetrics]) => {
+      const summary = baseSummary(groupedMetrics, 0);
+      return {
+        model,
+        share: {
+          totalTokens: globalTotals.total > 0 ? summary.tokens.total / globalTotals.total : 0,
+          generatedTokens: globalTotals.output > 0 ? summary.tokens.output / globalTotals.output : 0,
+        },
+        ...summary,
+      };
+    })
     .sort((a, b) => {
       const recentDiff = (b.latestTimestamp || 0) - (a.latestTimestamp || 0);
       if (recentDiff !== 0) return recentDiff;

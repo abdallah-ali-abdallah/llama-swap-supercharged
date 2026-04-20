@@ -2,7 +2,6 @@
   import { RefreshCw } from "lucide-svelte";
   import { inFlightRequests, listMetrics, metrics } from "../stores/api";
   import HistogramChart from "../components/stats/HistogramChart.svelte";
-  import ModelBreakdown from "../components/stats/ModelBreakdown.svelte";
   import StatCard from "../components/stats/StatCard.svelte";
   import TimeSeriesChart from "../components/stats/TimeSeriesChart.svelte";
   import TokenComposition from "../components/stats/TokenComposition.svelte";
@@ -49,6 +48,10 @@
 
   function cacheRate(model: ModelMetricSummary): string {
     return `${(model.tokens.cacheHitRate * 100).toFixed(1)}%`;
+  }
+
+  function percent(value: number): string {
+    return `${(value * 100).toFixed(1)}%`;
   }
 
   function lastSeen(model: ModelMetricSummary): string {
@@ -259,6 +262,8 @@
               <th class="px-4 py-3 text-right">Cached</th>
               <th class="px-4 py-3 text-right">Generated</th>
               <th class="px-4 py-3 text-right">Total tokens</th>
+              <th class="px-4 py-3 text-right">Processed %</th>
+              <th class="px-4 py-3 text-right">Generated %</th>
               <th class="px-4 py-3 text-right">Cache hit</th>
               <th class="px-4 py-3 text-right">P50 tok/s</th>
               <th class="px-4 py-3 text-right">P95 tok/s</th>
@@ -275,6 +280,8 @@
                 <td class="px-4 py-3 text-right">{number(model.tokens.cached)}</td>
                 <td class="px-4 py-3 text-right">{number(model.tokens.output)}</td>
                 <td class="px-4 py-3 text-right font-semibold text-txtmain">{number(model.tokens.total)}</td>
+                <td class="px-4 py-3 text-right">{percent(model.share.totalTokens)}</td>
+                <td class="px-4 py-3 text-right">{percent(model.share.generatedTokens)}</td>
                 <td class="px-4 py-3 text-right text-[#5794f2]">{cacheRate(model)}</td>
                 <td class="px-4 py-3 text-right text-[#73bf69]">{decimal(model.generationSpeed.p50)}</td>
                 <td class="px-4 py-3 text-right text-[#ff9830]">{decimal(model.generationSpeed.p95)}</td>
@@ -291,17 +298,4 @@
       </div>
     {/if}
   </section>
-
-  {#if dashboard.models.length > 0}
-    <section class="space-y-6">
-      <div>
-        <h2 class="p-0 text-lg font-semibold text-txtmain">Per-Model Drilldown</h2>
-        <p class="mt-1 text-sm text-txtsecondary">Each active model gets matching consumption and performance charts.</p>
-      </div>
-
-      {#each dashboard.models as model (model.model)}
-        <ModelBreakdown summary={model} metrics={dashboard.metrics} />
-      {/each}
-    </section>
-  {/if}
 </div>

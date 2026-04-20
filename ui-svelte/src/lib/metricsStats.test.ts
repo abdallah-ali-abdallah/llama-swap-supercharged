@@ -79,4 +79,16 @@ describe("metricsStats", () => {
     expect(stats.models.find((modelStats) => modelStats.model === "model-a")?.tokens.total).toBe(150);
     expect(stats.models).toHaveLength(3);
   });
+
+  test("calculates per-model token shares from global totals", () => {
+    const stats = summarizeDashboard([
+      metric({ id: 1, model: "model-a", new_input_tokens: 60, output_tokens: 40 }),
+      metric({ id: 2, model: "model-b", new_input_tokens: 20, output_tokens: 80 }),
+    ]);
+
+    const modelA = stats.models.find((modelStats) => modelStats.model === "model-a");
+
+    expect(modelA?.share.totalTokens).toBeCloseTo(100 / 200);
+    expect(modelA?.share.generatedTokens).toBeCloseTo(40 / 120);
+  });
 });
