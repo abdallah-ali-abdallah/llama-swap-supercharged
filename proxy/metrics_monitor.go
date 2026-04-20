@@ -67,7 +67,7 @@ type TokenMetrics struct {
 	Timestamp       time.Time `json:"timestamp"`
 	Model           string    `json:"model"`
 	CachedTokens    int       `json:"cache_tokens"`
-	InputTokens     int       `json:"input_tokens"`
+	NewInputTokens  int       `json:"new_input_tokens"`
 	OutputTokens    int       `json:"output_tokens"`
 	PromptPerSecond float64   `json:"prompt_per_second"`
 	TokensPerSecond float64   `json:"tokens_per_second"`
@@ -436,8 +436,8 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 
 	// default values
 	cachedTokens := -1 // unknown or missing data
+	newInputTokens := 0
 	outputTokens := 0
-	inputTokens := 0
 
 	// timings data
 	tokensPerSecond := -1.0
@@ -445,29 +445,35 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 	durationMs := wallDurationMs
 
 	if usage.Exists() {
-		if pt := usage.Get("prompt_tokens"); pt.Exists() {
-			// v1/chat/completions
-			inputTokens = int(pt.Int())
-		} else if it := usage.Get("input_tokens"); it.Exists() {
-			// v1/messages
-			inputTokens = int(it.Int())
-		}
-
 		if ct := usage.Get("completion_tokens"); ct.Exists() {
-			// v1/chat/completions
 			outputTokens = int(ct.Int())
 		} else if ot := usage.Get("output_tokens"); ot.Exists() {
 			outputTokens = int(ot.Int())
 		}
 
-		if ct := usage.Get("cache_read_input_tokens"); ct.Exists() {
+		// Read per-request cached tokens from llama.cpp's prompt_tokens_details.cached_tokens
+		if details := usage.Get("prompt_tokens_details"); details.Exists() && details.IsObject() {
+			if ct := details.Get("cached_tokens"); ct.Exists() {
+				cachedTokens = int(ct.Int())
+			}
+		} else if ct := usage.Get("cache_read_input_tokens"); ct.Exists() {
+			// Anthropic v1/messages format fallback
 			cachedTokens = int(ct.Int())
+		}
+
+		// Fallback: if no timings data, use prompt_tokens as new input tokens
+		if !timings.Exists() || timings.Get("prompt_n").Int() == 0 {
+			if pt := usage.Get("prompt_tokens"); pt.Exists() {
+				newInputTokens = int(pt.Int())
+			} else if it := usage.Get("input_tokens"); it.Exists() {
+				newInputTokens = int(it.Int())
+			}
 		}
 	}
 
-	// use llama-server's timing data for tok/sec and duration as it is more accurate
+	// use llama-server's timing data for tok/sec, new tokens, and duration
 	if timings.Exists() {
-		inputTokens = int(timings.Get("prompt_n").Int())
+		newInputTokens = int(timings.Get("prompt_n").Int())
 		outputTokens = int(timings.Get("predicted_n").Int())
 		promptPerSecond = timings.Get("prompt_per_second").Float()
 		tokensPerSecond = timings.Get("predicted_per_second").Float()
@@ -476,17 +482,30 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 			durationMs = timingsDurationMs
 		}
 
-		if cachedValue := timings.Get("cache_n"); cachedValue.Exists() {
-			cachedTokens = int(cachedValue.Int())
+		// Fallback: use cache_n from timings if cached_tokens not found in usage
+		if cachedTokens == -1 {
+			if cn := timings.Get("cache_n"); cn.Exists() {
+				cachedTokens = int(cn.Int())
+			}
+		}
+	} else {
+		// No timings — try usage as final fallback
+		if details := usage.Get("prompt_tokens_details"); details.Exists() && details.IsObject() {
+			if ct := details.Get("cached_tokens"); ct.Exists() {
+				cachedTokens = int(ct.Int())
+			}
+		} else if ct := usage.Get("cache_read_input_tokens"); ct.Exists() {
+			cachedTokens = int(ct.Int())
 		}
 	}
 
 	return TokenMetrics{
-		Timestamp:       time.Now(),
-		Model:           modelID,
-		CachedTokens:    cachedTokens,
-		InputTokens:     inputTokens,
-		OutputTokens:    outputTokens,
+		Timestamp:      time.Now(),
+		Model:          modelID,
+		CachedTokens:   cachedTokens,
+		NewInputTokens: newInputTokens,
+		OutputTokens:   outputTokens,
+		// Total input = new tokens processed + cached tokens served from KV cache
 		PromptPerSecond: promptPerSecond,
 		TokensPerSecond: tokensPerSecond,
 		DurationMs:      durationMs,

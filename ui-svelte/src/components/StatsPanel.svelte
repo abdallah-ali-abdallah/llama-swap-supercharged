@@ -1,164 +1,158 @@
 <script lang="ts">
   import { inFlightRequests, metrics } from "../stores/api";
-  import TokenHistogram from "./TokenHistogram.svelte";
 
-  interface HistogramData {
-    bins: number[];
-    min: number;
-    max: number;
-    binSize: number;
-    p99: number;
-    p95: number;
-    p50: number;
+  function pct(value: number, total: number): string {
+    if (total === 0) return "0.0%";
+    return ((value / total) * 100).toFixed(1) + "%";
   }
 
   let stats = $derived.by(() => {
     const totalRequests = $metrics.length;
+    const inFlight = $inFlightRequests;
+
     if (totalRequests === 0) {
       return {
         totalRequests: 0,
-        totalInputTokens: 0,
+        totalNewInputTokens: 0,
+        totalCachedTokens: 0,
         totalOutputTokens: 0,
-        inFlightRequests: $inFlightRequests,
-        tokenStats: { p99: "0", p95: "0", p50: "0" },
-        histogramData: null,
+        totalInputTokens: 0,
+        cacheHitRate: "0.0",
+        avgDurationMs: "0",
+        avgGenSpeed: "0",
+        inFlight,
       };
     }
 
-    const totalInputTokens = $metrics.reduce((sum, m) => sum + m.input_tokens, 0);
+    const totalNewInputTokens = $metrics.reduce((sum, m) => sum + (m.new_input_tokens || 0), 0);
+    const totalCachedTokens = $metrics.reduce((sum, m) => sum + Math.max(0, m.cache_tokens || 0), 0);
     const totalOutputTokens = $metrics.reduce((sum, m) => sum + m.output_tokens, 0);
+    const totalInputTokens = totalNewInputTokens + totalCachedTokens;
 
-    // Calculate token statistics using output_tokens and duration_ms
+    // Cache hit rate: what fraction of input was served from cache
+    const cacheHitRate = totalInputTokens > 0
+      ? ((totalCachedTokens / totalInputTokens) * 100).toFixed(1)
+      : "0.0";
+
+    // Average duration across all requests
+    const avgDurationMs = $metrics.reduce((sum, m) => sum + m.duration_ms, 0) / totalRequests;
+
+    // Average generation speed (tokens/sec) across valid requests
     const validMetrics = $metrics.filter((m) => m.duration_ms > 0 && m.output_tokens > 0);
-    if (validMetrics.length === 0) {
-      return {
-        totalRequests,
-        totalInputTokens,
-        totalOutputTokens,
-        inFlightRequests: $inFlightRequests,
-        tokenStats: { p99: "0", p95: "0", p50: "0" },
-        histogramData: null,
-      };
-    }
-
-    // Calculate tokens/second for each valid metric
-    const tokensPerSecond = validMetrics.map((m) => m.output_tokens / (m.duration_ms / 1000));
-
-    // Sort for percentile calculation
-    const sortedTokensPerSecond = [...tokensPerSecond].sort((a, b) => a - b);
-
-    const p99 = sortedTokensPerSecond[Math.floor(sortedTokensPerSecond.length * 0.99)];
-    const p95 = sortedTokensPerSecond[Math.floor(sortedTokensPerSecond.length * 0.95)];
-    const p50 = sortedTokensPerSecond[Math.floor(sortedTokensPerSecond.length * 0.5)];
-
-    // Create histogram data
-    const min = Math.min(...tokensPerSecond);
-    const max = Math.max(...tokensPerSecond);
-    const binCount = Math.min(30, Math.max(10, Math.floor(tokensPerSecond.length / 5)));
-    const binSize = (max - min) / binCount;
-
-    const bins = Array(binCount).fill(0);
-    tokensPerSecond.forEach((value) => {
-      const binIndex = Math.min(Math.floor((value - min) / binSize), binCount - 1);
-      bins[binIndex]++;
-    });
-
-    const histogramData: HistogramData = {
-      bins,
-      min,
-      max,
-      binSize,
-      p99,
-      p95,
-      p50,
-    };
+    const avgGenSpeed = validMetrics.length > 0
+      ? validMetrics.reduce((sum, m) => sum + m.tokens_per_second, 0) / validMetrics.length
+      : 0;
 
     return {
       totalRequests,
-      totalInputTokens,
+      totalNewInputTokens,
+      totalCachedTokens,
       totalOutputTokens,
-      inFlightRequests: $inFlightRequests,
-      tokenStats: {
-        p99: p99.toFixed(2),
-        p95: p95.toFixed(2),
-        p50: p50.toFixed(2),
-      },
-      histogramData,
+      totalInputTokens,
+      cacheHitRate,
+      avgDurationMs: avgDurationMs.toFixed(0),
+      avgGenSpeed: avgGenSpeed.toFixed(1),
+      inFlight,
     };
   });
 
   const nf = new Intl.NumberFormat();
 </script>
 
-<div class="card">
+<div class="card flex flex-col gap-4">
+  <!-- Summary Cards Row -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="rounded-lg bg-surface p-3 border border-card-border-inner">
+      <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Cache Hit Rate</div>
+      <div class="mt-1 flex items-baseline gap-2">
+        <span class="text-2xl font-bold text-emerald-500 dark:text-emerald-400">{stats.cacheHitRate}%</span>
+        {#if stats.totalCachedTokens > 0}
+          <span class="text-xs text-gray-500 dark:text-gray-400">
+            {nf.format(stats.totalCachedTokens)} / {nf.format(stats.totalInputTokens)} in
+          </span>
+        {/if}
+      </div>
+    </div>
+
+    <div class="rounded-lg bg-surface p-3 border border-card-border-inner">
+      <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Avg Gen Speed</div>
+      <div class="mt-1 flex items-baseline gap-2">
+        <span class="text-2xl font-bold text-blue-500 dark:text-blue-400">{stats.avgGenSpeed}</span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">tok/s</span>
+      </div>
+    </div>
+
+    <div class="rounded-lg bg-surface p-3 border border-card-border-inner">
+      <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Avg Duration</div>
+      <div class="mt-1 flex items-baseline gap-2">
+        <span class="text-2xl font-bold text-purple-500 dark:text-purple-400">{stats.avgDurationMs}</span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">ms/req</span>
+      </div>
+    </div>
+
+    <div class="rounded-lg bg-surface p-3 border border-card-border-inner">
+      <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Requests</div>
+      <div class="mt-1 flex items-baseline gap-2">
+        <span class="text-2xl font-bold text-gray-800 dark:text-white">{nf.format(stats.totalRequests)}</span>
+        {#if stats.inFlight > 0}
+          <span class="text-xs text-amber-500">+{stats.inFlight} pending</span>
+        {/if}
+      </div>
+    </div>
+  </div>
+
+  <!-- Token Breakdown Table -->
   <div class="rounded-lg overflow-hidden border border-card-border-inner">
-    <table class="min-w-full divide-y divide-card-border-inner">
-      <thead class="bg-secondary">
-        <tr>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-txtmain">Requests</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-txtmain border-l border-card-border-inner">
-            Processed
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-txtmain border-l border-card-border-inner">
-            Generated
-          </th>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-txtmain border-l border-card-border-inner">
-            Token Stats (tokens/sec)
-          </th>
+    <table class="min-w-full">
+      <thead>
+        <tr class="bg-secondary text-left">
+          <th class="px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-txtmain w-32">Requests</th>
+          <th class="px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-txtmain border-l border-card-border-inner">New Input Tokens</th>
+          <th class="px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-txtmain border-l border-card-border-inner">Cached Tokens</th>
+          <th class="px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-txtmain border-l border-card-border-inner">Generated Output</th>
         </tr>
       </thead>
 
-      <tbody class="bg-surface divide-y divide-card-border-inner">
-        <tr class="hover:bg-secondary">
-          <td class="px-4 py-4 text-sm font-semibold text-gray-900 dark:text-white">
-            <div class="flex flex-col gap-1">
-              <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Completed: {nf.format(stats.totalRequests)}</span>
-              <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Waiting: {nf.format(stats.inFlightRequests)}</span>
+      <tbody class="divide-y divide-card-border-inner">
+        <!-- Counts row -->
+        <tr class="bg-surface">
+          <td class="px-4 py-3">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">{nf.format(stats.totalRequests)} completed</div>
+            {#if stats.inFlight > 0}
+              <div class="text-xs text-amber-500">{stats.inFlight} in-flight</div>
+            {/if}
+          </td>
+
+          <td class="px-4 py-3 border-l border-card-border-inner">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-base font-bold">{nf.format(stats.totalNewInputTokens)}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{pct(stats.totalNewInputTokens, stats.totalInputTokens)} of input</span>
             </div>
           </td>
 
-          <td class="px-4 py-4 text-sm text-gray-700 dark:text-gray-300 border-l border-gray-200 dark:border-white/10">
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-medium">{nf.format(stats.totalInputTokens)}</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">tokens</span>
+          <td class="px-4 py-3 border-l border-card-border-inner">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-base font-bold text-blue-400 dark:text-blue-300">{nf.format(stats.totalCachedTokens)}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{pct(stats.totalCachedTokens, stats.totalInputTokens)} of input</span>
             </div>
           </td>
 
-          <td class="px-4 py-4 text-sm text-gray-700 dark:text-gray-300 border-l border-gray-200 dark:border-white/10">
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-medium">{nf.format(stats.totalOutputTokens)}</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">tokens</span>
+          <td class="px-4 py-3 border-l border-card-border-inner">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-base font-bold">{nf.format(stats.totalOutputTokens)}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{pct(stats.totalOutputTokens, stats.totalInputTokens)} of input</span>
             </div>
           </td>
+        </tr>
 
-          <td class="px-4 py-4 border-l border-gray-200 dark:border-white/10">
-            <div class="space-y-3">
-              <div class="grid grid-cols-3 gap-2 items-center">
-                <div class="text-center">
-                  <div class="text-xs text-gray-500 dark:text-gray-400">P50</div>
-                  <div class="mt-1 inline-block rounded-full bg-gray-100 dark:bg-white/5 px-3 py-1 text-sm font-semibold text-gray-800 dark:text-white">
-                    {stats.tokenStats.p50}
-                  </div>
-                </div>
-
-                <div class="text-center">
-                  <div class="text-xs text-gray-500 dark:text-gray-400">P95</div>
-                  <div class="mt-1 inline-block rounded-full bg-gray-100 dark:bg-white/5 px-3 py-1 text-sm font-semibold text-gray-800 dark:text-white">
-                    {stats.tokenStats.p95}
-                  </div>
-                </div>
-
-                <div class="text-center">
-                  <div class="text-xs text-gray-500 dark:text-gray-400">P99</div>
-                  <div class="mt-1 inline-block rounded-full bg-gray-100 dark:bg-white/5 px-3 py-1 text-sm font-semibold text-gray-800 dark:text-white">
-                    {stats.tokenStats.p99}
-                  </div>
-                </div>
-              </div>
-              {#if stats.histogramData}
-                <TokenHistogram data={stats.histogramData} />
-              {/if}
-            </div>
+        <!-- Totals row -->
+        <tr class="bg-secondary/50">
+          <td class="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-txtmain">Total Input</td>
+          <td class="px-4 py-3 border-l border-card-border-inner text-sm font-bold" colspan="2">
+            {nf.format(stats.totalInputTokens)} tokens
+          </td>
+          <td class="px-4 py-3 border-l border-card-border-inner text-xs font-medium text-gray-500 dark:text-gray-400">
+            output/input ratio: {pct(stats.totalOutputTokens, stats.totalInputTokens)}
           </td>
         </tr>
       </tbody>
