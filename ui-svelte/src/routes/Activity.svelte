@@ -65,6 +65,7 @@
   let sortedMetrics = $derived([...displayedMetrics].sort((a, b) => b.id - a.id));
 
   let selectedCapture = $state<ReqRespCapture | null>(null);
+  let selectedMetric = $state<Metrics | null>(null);
   let dialogOpen = $state(false);
   let loadingCaptureId = $state<number | null>(null);
 
@@ -78,11 +79,12 @@
     refreshTick++;
   }
 
-  async function viewCapture(id: number) {
-    loadingCaptureId = id;
-    const capture = await getCapture(id);
+  async function viewCapture(metric: Metrics) {
+    loadingCaptureId = metric.id;
+    const capture = await getCapture(metric.id);
     loadingCaptureId = null;
     if (capture) {
+      selectedMetric = metric;
       selectedCapture = capture;
       dialogOpen = true;
     }
@@ -91,6 +93,7 @@
   function closeDialog() {
     dialogOpen = false;
     selectedCapture = null;
+    selectedMetric = null;
   }
 
   $effect(() => {
@@ -249,7 +252,7 @@
               <td class="px-6 py-4">
                 {#if metric.has_capture}
                   <button
-                    onclick={() => viewCapture(metric.id)}
+                    onclick={() => viewCapture(metric)}
                     disabled={loadingCaptureId === metric.id}
                     class="btn btn--sm"
                   >
@@ -267,4 +270,4 @@
   {/if}
 </div>
 
-<CaptureDialog capture={selectedCapture} open={dialogOpen} onclose={closeDialog} />
+<CaptureDialog capture={selectedCapture} metric={selectedMetric} open={dialogOpen} onclose={closeDialog} />

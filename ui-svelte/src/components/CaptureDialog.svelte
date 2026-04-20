@@ -1,13 +1,15 @@
 <script lang="ts">
-  import type { ReqRespCapture } from "../lib/types";
+  import { Download } from "lucide-svelte";
+  import type { Metrics, ReqRespCapture } from "../lib/types";
 
   interface Props {
     capture: ReqRespCapture | null;
+    metric?: Metrics | null;
     open: boolean;
     onclose: () => void;
   }
 
-  let { capture, open, onclose }: Props = $props();
+  let { capture, metric = null, open, onclose }: Props = $props();
 
   let dialogEl: HTMLDialogElement | undefined = $state();
 
@@ -60,6 +62,14 @@
       return JSON.stringify(parsed, null, 2);
     } catch {
       return str;
+    }
+  }
+
+  function parseJson(str: string): unknown | undefined {
+    try {
+      return JSON.parse(str);
+    } catch {
+      return undefined;
     }
   }
 
@@ -136,6 +146,92 @@
       return text;
     }
     return displayedResponseBody;
+  }
+
+  function shouldExportText(contentType: string): boolean {
+    return isTextContentType(contentType) || contentType.includes("text/event-stream");
+  }
+
+  function createBodyExport(body: string, contentType: string) {
+    const text = shouldExportText(contentType) ? decodeBody(body) : undefined;
+    const json = text && contentType.includes("json") ? parseJson(text) : undefined;
+
+    return {
+      content_type: contentType || null,
+      body_base64: body || "",
+      ...(text !== undefined ? { body_text: text } : {}),
+      ...(json !== undefined ? { body_json: json } : {}),
+    };
+  }
+
+  function safeFilenamePart(value: string): string {
+    const normalized = value
+      .trim()
+      .replace(/^\/+/, "")
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return normalized || "capture";
+  }
+
+  function createCaptureExport(exportedAt: string) {
+    if (!capture) return null;
+
+    return {
+      format: "llama-swap.capture.v1",
+      exported_at: exportedAt,
+      activity: metric
+        ? {
+            id: metric.id,
+            display_id: metric.id + 1,
+            timestamp: metric.timestamp,
+            model: metric.model,
+            cache_tokens: metric.cache_tokens,
+            new_input_tokens: metric.new_input_tokens,
+            output_tokens: metric.output_tokens,
+            prompt_per_second: metric.prompt_per_second,
+            tokens_per_second: metric.tokens_per_second,
+            duration_ms: metric.duration_ms,
+            has_capture: metric.has_capture,
+          }
+        : null,
+      capture: {
+        id: capture.id,
+        display_id: capture.id + 1,
+        path: capture.req_path,
+        request: {
+          headers: capture.req_headers || {},
+          ...createBodyExport(capture.req_body, requestContentType),
+        },
+        response: {
+          headers: capture.resp_headers || {},
+          ...createBodyExport(capture.resp_body, responseContentType),
+          ...(isSSE ? { sse_chat: sseChat } : {}),
+        },
+      },
+    };
+  }
+
+  function downloadCapture(): void {
+    if (!capture) return;
+
+    const exportedAt = new Date().toISOString();
+    const exportData = createCaptureExport(exportedAt);
+    if (!exportData) return;
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const timestamp = exportedAt.replace(/[:.]/g, "-");
+    const pathPart = safeFilenamePart(capture.req_path);
+
+    link.href = url;
+    link.download = `llama-swap-capture-${capture.id + 1}-${pathPart}-${timestamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   // Request body derivations
@@ -422,7 +518,15 @@
         </details>
       </div>
 
-      <div class="p-4 border-t border-card-border flex justify-end">
+      <div class="p-4 border-t border-card-border flex justify-end gap-2">
+        <button
+          type="button"
+          onclick={downloadCapture}
+          class="btn inline-flex items-center gap-2"
+        >
+          <Download size={16} />
+          Download
+        </button>
         <button onclick={() => dialogEl?.close()} class="btn"> Close </button>
       </div>
     </div>
