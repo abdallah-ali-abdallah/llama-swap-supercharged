@@ -64,6 +64,7 @@ func (pm *ProxyManager) persistenceSettingsFromConfig(base persistenceSettings) 
 			Speeds:   pm.config.ActivityFields.Speeds,
 			Duration: pm.config.ActivityFields.Duration,
 		},
+		Stats: base.Stats,
 	}), true
 }
 

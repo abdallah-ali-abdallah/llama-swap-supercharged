@@ -9,6 +9,47 @@
   let message = $state("");
   let error = $state("");
 
+  const countFormatter = new Intl.NumberFormat();
+  const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  function formatCount(value: number | undefined): string {
+    return countFormatter.format(value ?? 0);
+  }
+
+  function formatBytes(value: number | undefined): string {
+    if (!value || value <= 0) {
+      return "0 B";
+    }
+
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let size = value;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex += 1;
+    }
+
+    const digits = unitIndex === 0 || size >= 10 ? 0 : 1;
+    return `${size.toFixed(digits)} ${units[unitIndex]}`;
+  }
+
+  function formatDateTime(value: number): string {
+    return dateTimeFormatter.format(new Date(value));
+  }
+
+  function formatStoredRange(oldest: number | undefined, newest: number | undefined): string {
+    if (!oldest || !newest) {
+      return "No rows";
+    }
+    if (oldest === newest) {
+      return formatDateTime(oldest);
+    }
+    return `${formatDateTime(oldest)} to ${formatDateTime(newest)}`;
+  }
+
   async function loadSettings(): Promise<void> {
     loading = true;
     error = "";
@@ -130,6 +171,37 @@
           <div class="text-xs uppercase tracking-wider text-txtsecondary">YAML config file</div>
           <div class="mt-1 break-all text-sm font-semibold text-txtmain">{settings.yaml_path}</div>
         </div>
+      {/if}
+
+      {#if settings.stats}
+        <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div class="rounded-md border border-card-border-inner bg-secondary p-3">
+            <div class="text-xs uppercase tracking-wider text-txtsecondary">Total SQLite size</div>
+            <div class="mt-2 text-xl font-semibold text-txtmain">{formatBytes(settings.stats.total_size_bytes)}</div>
+            <div class="mt-2 text-xs text-txtsecondary">
+              DB {formatBytes(settings.stats.db_size_bytes)} / WAL {formatBytes(settings.stats.wal_size_bytes)} / SHM {formatBytes(settings.stats.shm_size_bytes)}
+            </div>
+          </div>
+          <div class="rounded-md border border-card-border-inner bg-secondary p-3">
+            <div class="text-xs uppercase tracking-wider text-txtsecondary">Metric tracking points</div>
+            <div class="mt-2 text-xl font-semibold text-txtmain">{formatCount(settings.stats.usage_metrics_rows)}</div>
+            <div class="mt-2 text-xs text-txtsecondary">{formatStoredRange(settings.stats.oldest_metric_ms, settings.stats.newest_metric_ms)}</div>
+          </div>
+          <div class="rounded-md border border-card-border-inner bg-secondary p-3">
+            <div class="text-xs uppercase tracking-wider text-txtsecondary">Saved activities</div>
+            <div class="mt-2 text-xl font-semibold text-txtmain">{formatCount(settings.stats.activity_rows)}</div>
+            <div class="mt-2 text-xs text-txtsecondary">{formatStoredRange(settings.stats.oldest_activity_ms, settings.stats.newest_activity_ms)}</div>
+          </div>
+          <div class="rounded-md border border-card-border-inner bg-secondary p-3">
+            <div class="text-xs uppercase tracking-wider text-txtsecondary">Activity captures</div>
+            <div class="mt-2 text-xl font-semibold text-txtmain">{formatCount(settings.stats.activity_captures)}</div>
+            <div class="mt-2 text-xs text-txtsecondary">
+              {formatBytes(settings.stats.capture_bytes)} capture data / {formatCount(settings.stats.settings_rows)} settings rows
+            </div>
+          </div>
+        </div>
+      {:else if settings.sqlite_available}
+        <div class="mt-3 rounded-md border border-card-border-inner bg-secondary p-3 text-sm text-txtsecondary">Database stats unavailable.</div>
       {/if}
     </section>
 

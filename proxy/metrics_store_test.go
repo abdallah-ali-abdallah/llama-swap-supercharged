@@ -285,6 +285,48 @@ func TestMetricsStore_SeparatesUsageAndActivityPersistence(t *testing.T) {
 	require.Equal(t, 2, maxID)
 }
 
+func TestMetricsStore_StatsCountsPersistedRows(t *testing.T) {
+	logger := NewLogMonitorWriter(io.Discard)
+	path := filepath.Join(t.TempDir(), "metrics.db")
+	store, err := newMetricsStoreWithOptions(path, 30, 100, true, true, true, allActivityFields(), logger)
+	require.NoError(t, err)
+	defer store.close()
+
+	base := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	require.NoError(t, store.insert(TokenMetrics{ID: 1, Timestamp: base, Model: "model-a", NewInputTokens: 10, OutputTokens: 5, HasCapture: true}))
+	require.NoError(t, store.insert(TokenMetrics{ID: 2, Timestamp: base.Add(time.Minute), Model: "model-b", NewInputTokens: 20, OutputTokens: 10}))
+	require.NoError(t, store.insertCapture(1, []byte("compressed-capture")))
+
+	stats, err := store.stats()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stats.UsageMetricsRows)
+	require.Equal(t, int64(2), stats.ActivityRows)
+	require.Equal(t, int64(1), stats.ActivityCaptures)
+	require.Equal(t, int64(len("compressed-capture")), stats.CaptureBytes)
+	require.Equal(t, base.UnixMilli(), stats.OldestMetricMs)
+	require.Equal(t, base.Add(time.Minute).UnixMilli(), stats.NewestMetricMs)
+	require.Equal(t, base.UnixMilli(), stats.OldestActivityMs)
+	require.Equal(t, base.Add(time.Minute).UnixMilli(), stats.NewestActivityMs)
+	require.GreaterOrEqual(t, stats.SettingsRows, int64(1))
+}
+
+func TestMetricsStore_StatsReportsDatabaseFootprint(t *testing.T) {
+	logger := NewLogMonitorWriter(io.Discard)
+	path := filepath.Join(t.TempDir(), "metrics.db")
+	store, err := newMetricsStore(path, 30, 100, logger)
+	require.NoError(t, err)
+	defer store.close()
+
+	require.NoError(t, store.insert(TokenMetrics{ID: 1, Timestamp: time.Now(), Model: "model-a", NewInputTokens: 10}))
+
+	stats, err := store.stats()
+	require.NoError(t, err)
+	require.Greater(t, stats.DBSizeBytes, int64(0))
+	require.GreaterOrEqual(t, stats.WALSizeBytes, int64(0))
+	require.GreaterOrEqual(t, stats.SHMSizeBytes, int64(0))
+	require.Equal(t, stats.DBSizeBytes+stats.WALSizeBytes+stats.SHMSizeBytes, stats.TotalSizeBytes)
+}
+
 func TestMetricsMonitor_SwitchesPersistenceStore(t *testing.T) {
 	logger := NewLogMonitorWriter(io.Discard)
 	dir := t.TempDir()

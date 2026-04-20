@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mostlygeek/llama-swap/proxy/config"
@@ -153,6 +154,37 @@ func TestProxyManager_PersistenceSettingsReportsStartupYAMLConflict(t *testing.T
 		SQLiteValue: "false",
 	})
 	require.True(t, response.LoggingEnabled)
+}
+
+func TestProxyManager_PersistenceSettingsIncludesStats(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	dbPath := filepath.Join(t.TempDir(), "metrics.db")
+	writeTestConfig(t, configPath, dbPath)
+	cfg, err := config.LoadConfig(configPath)
+	require.NoError(t, err)
+
+	pm := New(cfg)
+	defer pm.StopProcesses(StopImmediately)
+	pm.metricsMonitor.addMetrics(TokenMetrics{
+		Timestamp:      time.Now(),
+		Model:          "model-a",
+		NewInputTokens: 10,
+		OutputTokens:   5,
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	pm.apiGetPersistenceSettings(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response persistenceSettings
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.NotNil(t, response.Stats)
+	require.Greater(t, response.Stats.TotalSizeBytes, int64(0))
+	require.Equal(t, int64(1), response.Stats.UsageMetricsRows)
+	require.Equal(t, int64(1), response.Stats.ActivityRows)
 }
 
 func TestProxyManager_PersistenceSettingsNormalizesCaptureWhenActivityDisabled(t *testing.T) {

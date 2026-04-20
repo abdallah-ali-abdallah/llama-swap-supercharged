@@ -194,12 +194,29 @@ export interface PersistenceSettings {
   activity_capture_persistence: boolean;
   capture_redact_headers: boolean;
   activity_fields: ActivityFieldsSettings;
+  stats?: PersistenceStats;
 }
 
 export interface PersistenceConflict {
   field: string;
   yaml_value: string;
   sqlite_value: string;
+}
+
+export interface PersistenceStats {
+  db_size_bytes: number;
+  wal_size_bytes: number;
+  shm_size_bytes: number;
+  total_size_bytes: number;
+  usage_metrics_rows: number;
+  activity_rows: number;
+  activity_captures: number;
+  capture_bytes: number;
+  settings_rows: number;
+  oldest_metric_ms?: number;
+  newest_metric_ms?: number;
+  oldest_activity_ms?: number;
+  newest_activity_ms?: number;
 }
 
 export async function getPersistenceSettings(): Promise<PersistenceSettings | null> {

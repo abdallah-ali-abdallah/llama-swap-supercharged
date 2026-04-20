@@ -372,7 +372,13 @@ func (mp *metricsMonitor) persistenceSettings() persistenceSettings {
 			},
 		}
 	}
-	return store.settings()
+	settings := store.settings()
+	if stats, err := store.stats(); err == nil {
+		settings.Stats = &stats
+	} else if mp.logger != nil {
+		mp.logger.Warnf("failed to read metrics persistence stats from %s: %v", store.path, err)
+	}
+	return settings
 }
 
 func (mp *metricsMonitor) yamlConflicts() []persistenceConflict {

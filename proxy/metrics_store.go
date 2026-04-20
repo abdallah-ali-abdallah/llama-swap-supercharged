@@ -43,6 +43,23 @@ type persistenceSettings struct {
 	ActivityCapturePersistence bool                   `json:"activity_capture_persistence"`
 	CaptureRedactHeaders       bool                   `json:"capture_redact_headers"`
 	ActivityFields             activityFieldsSettings `json:"activity_fields"`
+	Stats                      *persistenceStats      `json:"stats,omitempty"`
+}
+
+type persistenceStats struct {
+	DBSizeBytes      int64 `json:"db_size_bytes"`
+	WALSizeBytes     int64 `json:"wal_size_bytes"`
+	SHMSizeBytes     int64 `json:"shm_size_bytes"`
+	TotalSizeBytes   int64 `json:"total_size_bytes"`
+	UsageMetricsRows int64 `json:"usage_metrics_rows"`
+	ActivityRows     int64 `json:"activity_rows"`
+	ActivityCaptures int64 `json:"activity_captures"`
+	CaptureBytes     int64 `json:"capture_bytes"`
+	SettingsRows     int64 `json:"settings_rows"`
+	OldestMetricMs   int64 `json:"oldest_metric_ms,omitempty"`
+	NewestMetricMs   int64 `json:"newest_metric_ms,omitempty"`
+	OldestActivityMs int64 `json:"oldest_activity_ms,omitempty"`
+	NewestActivityMs int64 `json:"newest_activity_ms,omitempty"`
 }
 
 type persistenceConflict struct {
@@ -417,6 +434,83 @@ func (s *metricsStore) query(q metricsQuery) ([]TokenMetrics, bool, error) {
 	}
 
 	return metrics, truncated, nil
+}
+
+func (s *metricsStore) stats() (persistenceStats, error) {
+	if s == nil || s.db == nil {
+		return persistenceStats{}, nil
+	}
+
+	stats := persistenceStats{}
+	var err error
+	if stats.DBSizeBytes, err = fileSizeIfExists(s.path); err != nil {
+		return stats, err
+	}
+	if stats.WALSizeBytes, err = fileSizeIfExists(s.path + "-wal"); err != nil {
+		return stats, err
+	}
+	if stats.SHMSizeBytes, err = fileSizeIfExists(s.path + "-shm"); err != nil {
+		return stats, err
+	}
+	stats.TotalSizeBytes = stats.DBSizeBytes + stats.WALSizeBytes + stats.SHMSizeBytes
+
+	if stats.UsageMetricsRows, err = s.countRows("token_metrics"); err != nil {
+		return stats, err
+	}
+	if stats.ActivityRows, err = s.countRows("activity_metrics"); err != nil {
+		return stats, err
+	}
+	if stats.ActivityCaptures, err = s.countRows("activity_request_captures"); err != nil {
+		return stats, err
+	}
+	if stats.SettingsRows, err = s.countRows("persistence_settings"); err != nil {
+		return stats, err
+	}
+	if err := s.db.QueryRow("SELECT COALESCE(SUM(LENGTH(capture_zstd)), 0) FROM activity_request_captures").Scan(&stats.CaptureBytes); err != nil {
+		return stats, fmt.Errorf("read activity capture bytes: %w", err)
+	}
+	if stats.OldestMetricMs, stats.NewestMetricMs, err = s.timestampRange("token_metrics"); err != nil {
+		return stats, err
+	}
+	if stats.OldestActivityMs, stats.NewestActivityMs, err = s.timestampRange("activity_metrics"); err != nil {
+		return stats, err
+	}
+
+	return stats, nil
+}
+
+func (s *metricsStore) countRows(table string) (int64, error) {
+	var count int64
+	if err := s.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count %s rows: %w", table, err)
+	}
+	return count, nil
+}
+
+func (s *metricsStore) timestampRange(table string) (int64, int64, error) {
+	var oldest sql.NullInt64
+	var newest sql.NullInt64
+	if err := s.db.QueryRow(fmt.Sprintf("SELECT MIN(timestamp_ms), MAX(timestamp_ms) FROM %s", table)).Scan(&oldest, &newest); err != nil {
+		return 0, 0, fmt.Errorf("read %s timestamp range: %w", table, err)
+	}
+	if !oldest.Valid || !newest.Valid {
+		return 0, 0, nil
+	}
+	return oldest.Int64, newest.Int64, nil
+}
+
+func fileSizeIfExists(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return 0, nil
+	}
+	return info.Size(), nil
 }
 
 func (s *metricsStore) cleanup() error {

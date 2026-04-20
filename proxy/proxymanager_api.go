@@ -462,6 +462,7 @@ func (pm *ProxyManager) apiUpdatePersistenceSettings(c *gin.Context) {
 	pm.metricsMonitor.setYAMLConflicts(nil)
 	updated.YAMLAvailable = true
 	updated.YAMLPath = pm.config.ConfigPath
+	updated.Stats = pm.metricsMonitor.persistenceSettings().Stats
 	c.JSON(http.StatusOK, updated)
 }
 
