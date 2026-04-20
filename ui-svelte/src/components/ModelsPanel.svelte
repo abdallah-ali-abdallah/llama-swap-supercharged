@@ -3,7 +3,7 @@
   import { models, loadModel, unloadAllModels, unloadSingleModel, getModelConfiguration } from "../stores/api";
   import { isNarrow } from "../stores/theme";
   import { persistentStore } from "../stores/persistent";
-  import type { Model, ModelConfiguration } from "../lib/types";
+  import type { Model, ModelConfiguration, ModelMemoryComponent, ModelMemorySnapshot } from "../lib/types";
 
   let isUnloading = $state(false);
   let menuOpen = $state(false);
@@ -11,6 +11,7 @@
   let selectedConfiguration: ModelConfiguration | null = $state(null);
   let configDialogOpen = $state(false);
   let configLoading = $state(false);
+  let expandedMemory = $state<Set<string>>(new Set());
 
   const showUnlistedStore = persistentStore<boolean>("showUnlisted", true);
   const showIdorNameStore = persistentStore<"id" | "name">("showIdorName", "id");
@@ -73,6 +74,56 @@
 
   function closeConfigurationDialog(): void {
     configDialogOpen = false;
+  }
+
+  function toggleMemory(modelID: string): void {
+    const next = new Set(expandedMemory);
+    if (next.has(modelID)) {
+      next.delete(modelID);
+    } else {
+      next.add(modelID);
+    }
+    expandedMemory = next;
+  }
+
+  function formatBytes(bytes?: number): string {
+    if (!bytes || bytes <= 0) return "-";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    const digits = value >= 100 || unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
+    return `${value.toFixed(digits)} ${units[unitIndex]}`;
+  }
+
+  function sumComponents(memory: ModelMemorySnapshot | undefined, key: keyof Pick<ModelMemoryComponent, "model_bytes" | "kv_bytes" | "compute_bytes" | "output_bytes">): number {
+    if (!memory) return 0;
+    return [...(memory.devices ?? []), ...(memory.host ?? []), ...(memory.unknown ?? [])].reduce((sum, component) => sum + (component[key] ?? 0), 0);
+  }
+
+  function memorySummary(memory: ModelMemorySnapshot | undefined): string {
+    if (!memory) return "";
+    const parts = [
+      ["model", sumComponents(memory, "model_bytes")],
+      ["KV", sumComponents(memory, "kv_bytes")],
+      ["compute", sumComponents(memory, "compute_bytes")],
+    ].filter(([, bytes]) => Number(bytes) > 0);
+    return parts.map(([label, bytes]) => `${label} ${formatBytes(Number(bytes))}`).join(" | ");
+  }
+
+  function hasMemoryDetails(model: Model): boolean {
+    return Boolean(model.memory && ((model.memory.devices?.length ?? 0) > 0 || (model.memory.host?.length ?? 0) > 0 || (model.memory.unknown?.length ?? 0) > 0));
+  }
+
+  function memoryRows(memory: ModelMemorySnapshot): Array<{ label: string; rows: ModelMemoryComponent[] }> {
+    return [
+      { label: "Device", rows: memory.devices ?? [] },
+      { label: "Host", rows: memory.host ?? [] },
+      { label: "Other", rows: memory.unknown ?? [] },
+    ].filter((group) => group.rows.length > 0);
   }
 </script>
 
@@ -173,6 +224,9 @@
         <tr class="text-left border-b border-gray-200 dark:border-white/10 bg-surface">
           <th>{$showIdorNameStore === "id" ? "Model ID" : "Name"}</th>
           <th></th>
+          {#if !$isNarrow}
+            <th>Memory</th>
+          {/if}
           <th>State</th>
         </tr>
       </thead>
@@ -189,21 +243,89 @@
               {#if model.aliases && model.aliases.length > 0}
                 <p class="text-xs text-txtsecondary">Aliases: {model.aliases.join(", ")}</p>
               {/if}
+              {#if $isNarrow}
+                <div class="mt-2 text-xs text-txtsecondary">
+                  <span class="font-semibold text-txtmain">Memory:</span>
+                  {#if model.memory}
+                    <span>{formatBytes(model.memory.device_total_bytes)}</span>
+                    {#if memorySummary(model.memory)}
+                      <span class="block">{memorySummary(model.memory)}</span>
+                    {/if}
+                    {#if hasMemoryDetails(model)}
+                      <button class="btn btn--sm mt-1" onclick={() => toggleMemory(model.id)}>
+                        {expandedMemory.has(model.id) ? "Hide memory" : "Show memory"}
+                      </button>
+                    {/if}
+                  {:else}
+                    <span>-</span>
+                  {/if}
+                </div>
+              {/if}
             </td>
             <td class="w-48">
               <div class="flex justify-end gap-2">
                 <button class="btn btn--sm whitespace-nowrap" onclick={() => viewConfiguration(model)}>View configurations</button>
-              {#if model.state === "stopped"}
-                <button class="btn btn--sm" onclick={() => loadModel(model.id)}>Load</button>
-              {:else}
-                <button class="btn btn--sm" onclick={() => unloadSingleModel(model.id)} disabled={model.state !== "ready"}>Unload</button>
-              {/if}
+                {#if model.state === "stopped"}
+                  <button class="btn btn--sm" onclick={() => loadModel(model.id)}>Load</button>
+                {:else}
+                  <button class="btn btn--sm" onclick={() => unloadSingleModel(model.id)} disabled={model.state !== "ready"}>Unload</button>
+                {/if}
               </div>
             </td>
+            {#if !$isNarrow}
+              <td class="w-56">
+                {#if model.memory}
+                  <div class="text-sm">
+                    <div class="flex items-center gap-2">
+                      <span class="font-semibold">{formatBytes(model.memory.device_total_bytes)}</span>
+                      {#if hasMemoryDetails(model)}
+                        <button class="btn btn--sm" aria-label="Toggle memory details for {model.id}" onclick={() => toggleMemory(model.id)}>
+                          {expandedMemory.has(model.id) ? "Hide" : "Details"}
+                        </button>
+                      {/if}
+                    </div>
+                    {#if memorySummary(model.memory)}
+                      <p class="text-xs text-txtsecondary">{memorySummary(model.memory)}</p>
+                    {/if}
+                  </div>
+                {:else}
+                  <span class="text-txtsecondary">-</span>
+                {/if}
+              </td>
+            {/if}
             <td class="w-20">
               <span class="w-16 text-center status status--{model.state}">{model.state}</span>
             </td>
           </tr>
+          {#if expandedMemory.has(model.id) && model.memory}
+            <tr class="border-b border-gray-200 bg-secondary/40">
+              <td colspan={$isNarrow ? 3 : 4}>
+                <div class="py-3 text-sm">
+                  {#each memoryRows(model.memory) as group (group.label)}
+                    <div class="mb-2 last:mb-0">
+                      <p class="text-xs font-semibold uppercase text-txtsecondary">{group.label}</p>
+                      {#each group.rows as row (row.name)}
+                        <div class="grid gap-2 py-1 text-xs md:grid-cols-[minmax(10rem,1fr)_repeat(5,minmax(4rem,auto))]">
+                          <span class="font-semibold text-txtmain">{row.name}</span>
+                          <span>model {formatBytes(row.model_bytes)}</span>
+                          <span>KV {formatBytes(row.kv_bytes)}</span>
+                          <span>compute {formatBytes(row.compute_bytes)}</span>
+                          <span>output {formatBytes(row.output_bytes)}</span>
+                          <span>total {formatBytes(row.tracked_bytes)}</span>
+                          {#if row.unaccounted_bytes}
+                            <span class="text-txtsecondary">runtime {formatBytes(row.unaccounted_bytes)}</span>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/each}
+                  {#if model.memory.host_total_bytes > 0}
+                    <p class="mt-2 text-xs text-txtsecondary">Host tracked: {formatBytes(model.memory.host_total_bytes)}</p>
+                  {/if}
+                </div>
+              </td>
+            </tr>
+          {/if}
         {/each}
       </tbody>
     </table>

@@ -10,6 +10,30 @@ export interface Model {
   unlisted: boolean;
   peerID: string;
   aliases?: string[];
+  memory?: ModelMemorySnapshot;
+}
+
+export interface ModelMemorySnapshot {
+  source: "llamacpp_logs";
+  updated_at: string;
+  device_total_bytes: number;
+  host_total_bytes: number;
+  total_tracked_bytes: number;
+  devices?: ModelMemoryComponent[];
+  host?: ModelMemoryComponent[];
+  unknown?: ModelMemoryComponent[];
+}
+
+export interface ModelMemoryComponent {
+  name: string;
+  model_bytes?: number;
+  kv_bytes?: number;
+  compute_bytes?: number;
+  output_bytes?: number;
+  tracked_bytes: number;
+  device_capacity_bytes?: number;
+  device_free_bytes?: number;
+  unaccounted_bytes?: number;
 }
 
 export interface ModelConfiguration {

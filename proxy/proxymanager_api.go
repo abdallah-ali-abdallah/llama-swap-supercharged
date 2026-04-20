@@ -18,13 +18,14 @@ import (
 )
 
 type Model struct {
-	Id          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	State       string   `json:"state"`
-	Unlisted    bool     `json:"unlisted"`
-	PeerID      string   `json:"peerID"`
-	Aliases     []string `json:"aliases,omitempty"`
+	Id          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description"`
+	State       string                  `json:"state"`
+	Unlisted    bool                    `json:"unlisted"`
+	PeerID      string                  `json:"peerID"`
+	Aliases     []string                `json:"aliases,omitempty"`
+	Memory      *LlamaCppMemorySnapshot `json:"memory,omitempty"`
 }
 
 type ModelConfiguration struct {
@@ -82,14 +83,18 @@ func (pm *ProxyManager) getModelStatus() []Model {
 				process = processGroup.processes[modelID]
 			}
 		}
+		var memory *LlamaCppMemorySnapshot
 		if process != nil {
 			switch process.CurrentState() {
 			case StateReady:
 				state = "ready"
+				memory = process.MemorySnapshot()
 			case StateStarting:
 				state = "starting"
+				memory = process.MemorySnapshot()
 			case StateStopping:
 				state = "stopping"
+				memory = process.MemorySnapshot()
 			case StateShutdown:
 				state = "shutdown"
 			case StateStopped:
@@ -103,6 +108,7 @@ func (pm *ProxyManager) getModelStatus() []Model {
 			State:       state,
 			Unlisted:    pm.config.Models[modelID].Unlisted,
 			Aliases:     pm.config.Models[modelID].Aliases,
+			Memory:      memory,
 		})
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -55,6 +56,7 @@ type Process struct {
 
 	processLogger *LogMonitor
 	proxyLogger   *LogMonitor
+	memoryTracker *llamaCppMemoryTracker
 
 	healthCheckTimeout      int
 	healthCheckLoopInterval time.Duration
@@ -134,6 +136,7 @@ func NewProcess(ID string, healthCheckTimeout int, config config.ModelConfig, pr
 		cancelUpstream:          nil,
 		processLogger:           processLogger,
 		proxyLogger:             proxyLogger,
+		memoryTracker:           newLlamaCppMemoryTracker(),
 		healthCheckTimeout:      healthCheckTimeout,
 		healthCheckLoopInterval: 5 * time.Second, /* default, can not be set by user - used for testing */
 		state:                   StateStopped,
@@ -151,6 +154,13 @@ func NewProcess(ID string, healthCheckTimeout int, config config.ModelConfig, pr
 // LogMonitor returns the log monitor associated with the process.
 func (p *Process) LogMonitor() *LogMonitor {
 	return p.processLogger
+}
+
+func (p *Process) MemorySnapshot() *LlamaCppMemorySnapshot {
+	if p.memoryTracker == nil {
+		return nil
+	}
+	return p.memoryTracker.Snapshot()
 }
 
 // setLastRequestHandled sets the last request handled time in a thread-safe manner.
@@ -256,6 +266,7 @@ func (p *Process) start() error {
 			return fmt.Errorf("failed to set Process state to starting: current state: %v, error: %v", curState, err)
 		}
 		defer p.waitStarting.Done()
+		p.memoryTracker.Reset()
 
 		// Mimic the real stop path: cancelUpstream transitions
 		// StateStopping -> StateStopped and closes cmdWaitChan,
@@ -263,6 +274,7 @@ func (p *Process) start() error {
 		ch := make(chan struct{})
 		p.cmdMutex.Lock()
 		p.cancelUpstream = func() {
+			p.memoryTracker.Reset()
 			if curState := p.CurrentState(); curState == StateStopping {
 				if _, err := p.swapState(StateStopping, StateStopped); err != nil {
 					p.forceState(StateStopped)
@@ -314,9 +326,11 @@ func (p *Process) start() error {
 	defer p.waitStarting.Done()
 	cmdContext, ctxCancelUpstream := context.WithCancel(context.Background())
 
+	p.memoryTracker.Reset()
 	p.cmd = exec.CommandContext(cmdContext, args[0], args[1:]...)
-	p.cmd.Stdout = p.processLogger
-	p.cmd.Stderr = p.processLogger
+	processOutput := io.MultiWriter(p.memoryTracker, p.processLogger)
+	p.cmd.Stdout = processOutput
+	p.cmd.Stderr = processOutput
 	p.cmd.Env = append(p.cmd.Environ(), p.config.Env...)
 	p.cmd.Cancel = p.cmdStopUpstreamProcess
 	p.cmd.WaitDelay = p.gracefulStopTimeout
@@ -334,6 +348,7 @@ func (p *Process) start() error {
 
 	// Set process state to failed
 	if err != nil {
+		p.memoryTracker.Reset()
 		if curState, swapErr := p.swapState(StateStarting, StateStopped); swapErr != nil {
 			p.forceState(StateStopped) // force it into a stopped state
 			return fmt.Errorf(
@@ -671,12 +686,14 @@ func (p *Process) waitForCmd() {
 	currentState := p.CurrentState()
 	switch currentState {
 	case StateStopping:
+		p.memoryTracker.Reset()
 		if curState, err := p.swapState(StateStopping, StateStopped); err != nil {
 			p.proxyLogger.Errorf("<%s> Process exited but could not swap to StateStopped. curState=%s, err: %v", p.ID, curState, err)
 			p.forceState(StateStopped)
 		}
 	default:
 		p.proxyLogger.Infof("<%s> process exited but not StateStopping, current state: %s", p.ID, currentState)
+		p.memoryTracker.Reset()
 		p.forceState(StateStopped) // force it to be in this state
 	}
 
