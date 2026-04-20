@@ -211,21 +211,18 @@
       value={decimal(dashboard.generationSpeed.p50)}
       unit="tok/s"
       subtext={`P95 ${decimal(dashboard.generationSpeed.p95)} tok/s · P99 ${decimal(dashboard.generationSpeed.p99)} tok/s`}
-      trend={dashboard.trend.generationSpeed}
       tone="green"
     />
     <StatCard
       title="Generated Tokens"
       value={number(dashboard.tokens.output)}
       subtext={`${number(dashboard.requests)} requests · ${number(dashboard.inFlight)} in flight`}
-      trend={dashboard.trend.outputTokens}
       tone="yellow"
     />
     <StatCard
       title="Average Duration"
       value={duration(dashboard.duration.avg)}
       subtext={`P95 ${duration(dashboard.duration.p95)} · P99 ${duration(dashboard.duration.p99)}`}
-      trend={dashboard.trend.duration}
       tone="orange"
     />
   </section>

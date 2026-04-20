@@ -4,11 +4,10 @@
     value: string;
     unit?: string;
     subtext?: string;
-    trend?: number | null;
     tone?: "green" | "blue" | "yellow" | "orange" | "purple" | "neutral";
   }
 
-  let { title, value, unit = "", subtext = "", trend = null, tone = "neutral" }: Props = $props();
+  let { title, value, unit = "", subtext = "", tone = "neutral" }: Props = $props();
 
   const toneClass = $derived(
     {
@@ -21,21 +20,11 @@
     }[tone],
   );
 
-  let trendLabel = $derived.by(() => {
-    if (trend === null) return "";
-    const sign = trend > 0 ? "+" : "";
-    return `${sign}${(trend * 100).toFixed(1)}%`;
-  });
 </script>
 
 <section class="rounded-lg border border-card-border bg-surface p-4 shadow-sm min-h-[128px]">
   <div class="flex items-start justify-between gap-3">
     <h2 class="p-0 text-xs font-semibold uppercase tracking-wider text-txtsecondary">{title}</h2>
-    {#if trendLabel}
-      <span class="rounded-md bg-secondary px-2 py-0.5 text-xs font-semibold {trend && trend < 0 ? 'text-error' : 'text-success'}">
-        {trendLabel}
-      </span>
-    {/if}
   </div>
 
   <div class="mt-5 flex items-baseline gap-2">
@@ -49,4 +38,3 @@
     <p class="mt-3 text-xs leading-5 text-txtsecondary">{subtext}</p>
   {/if}
 </section>
-
