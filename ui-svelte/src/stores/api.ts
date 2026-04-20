@@ -143,6 +143,7 @@ export interface MetricsRangeOptions {
   range: string;
   from?: string;
   to?: string;
+  scope?: "usage" | "activity";
 }
 
 export interface MetricsRangeResult {
@@ -156,6 +157,7 @@ export async function listMetrics(options: MetricsRangeOptions): Promise<Metrics
     params.set("range", options.range);
     if (options.from) params.set("from", options.from);
     if (options.to) params.set("to", options.to);
+    if (options.scope) params.set("scope", options.scope);
 
     const response = await fetch(`/api/metrics?${params.toString()}`);
     if (!response.ok) {
@@ -170,6 +172,50 @@ export async function listMetrics(options: MetricsRangeOptions): Promise<Metrics
     console.error("Failed to fetch metrics:", error);
     return { metrics: [], truncated: false };
   }
+}
+
+export interface ActivityFieldsSettings {
+  model: boolean;
+  tokens: boolean;
+  speeds: boolean;
+  duration: boolean;
+}
+
+export interface PersistenceSettings {
+  sqlite_available: boolean;
+  db_path: string;
+  retention_days: number;
+  logging_enabled: boolean;
+  usage_metrics_persistence: boolean;
+  activity_persistence: boolean;
+  activity_capture_persistence: boolean;
+  capture_redact_headers: boolean;
+  activity_fields: ActivityFieldsSettings;
+}
+
+export async function getPersistenceSettings(): Promise<PersistenceSettings | null> {
+  try {
+    const response = await fetch("/api/settings/persistence");
+    if (!response.ok) {
+      throw new Error(`Failed to fetch persistence settings: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to fetch persistence settings:", error);
+    return null;
+  }
+}
+
+export async function updatePersistenceSettings(settings: PersistenceSettings): Promise<PersistenceSettings> {
+  const response = await fetch("/api/settings/persistence", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to update persistence settings: ${response.status}`);
+  }
+  return await response.json();
 }
 
 export async function unloadAllModels(): Promise<void> {

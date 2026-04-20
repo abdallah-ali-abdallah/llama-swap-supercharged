@@ -120,7 +120,7 @@
     historicalLoading = true;
     historicalError = "";
 
-    listMetrics({ range, from: fromISO, to: toISO })
+    listMetrics({ range, from: fromISO, to: toISO, scope: "activity" })
       .then((result) => {
         if (cancelled) return;
         historicalMetrics = result.metrics;

@@ -47,6 +47,8 @@ func addApiHandlers(pm *ProxyManager) {
 		apiGroup.POST("/models/unload/*model", pm.apiUnloadSingleModelHandler)
 		apiGroup.GET("/events", pm.apiSendEvents)
 		apiGroup.GET("/metrics", pm.apiGetMetrics)
+		apiGroup.GET("/settings/persistence", pm.apiGetPersistenceSettings)
+		apiGroup.PUT("/settings/persistence", pm.apiUpdatePersistenceSettings)
 		apiGroup.GET("/version", pm.apiGetVersion)
 		apiGroup.GET("/captures/:id", pm.apiGetCapture)
 	}
@@ -287,7 +289,11 @@ func (pm *ProxyManager) parseMetricsRangeQuery(c *gin.Context) (metricsQuery, st
 	limit := metricsLimit(c.Query("limit"), pm.config.MetricsQueryMaxRows)
 	now := time.Now()
 	rangeName := strings.ToLower(strings.TrimSpace(c.Query("range")))
-	query := metricsQuery{Limit: limit}
+	scope := strings.ToLower(strings.TrimSpace(c.Query("scope")))
+	if scope != "" && scope != "usage" && scope != "activity" {
+		return metricsQuery{}, "", fmt.Errorf("unsupported metrics scope %q", scope)
+	}
+	query := metricsQuery{Limit: limit, Scope: scope}
 
 	setFrom := func(duration time.Duration) {
 		from := now.Add(-duration)
@@ -381,6 +387,44 @@ func parseMetricRangeTime(value string) (time.Time, bool, error) {
 		return time.UnixMilli(unixValue), true, nil
 	}
 	return time.Unix(unixValue, 0), true, nil
+}
+
+func (pm *ProxyManager) apiGetPersistenceSettings(c *gin.Context) {
+	settings := pm.metricsMonitor.persistenceSettings()
+	c.JSON(http.StatusOK, settings)
+}
+
+func (pm *ProxyManager) apiUpdatePersistenceSettings(c *gin.Context) {
+	var settings persistenceSettings
+	if err := c.ShouldBindJSON(&settings); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid persistence settings"})
+		return
+	}
+	if strings.TrimSpace(settings.DBPath) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "db_path is required"})
+		return
+	}
+	settings.DBPath = resolveMetricsDBPath(pm.config, settings.DBPath)
+
+	updated, err := pm.metricsMonitor.updatePersistenceSettings(settings)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	pm.applyLoggingEnabled(updated.LoggingEnabled)
+	c.JSON(http.StatusOK, updated)
+}
+
+func (pm *ProxyManager) applyLoggingEnabled(enabled bool) {
+	if pm.proxyLogger != nil {
+		pm.proxyLogger.SetEnabled(enabled)
+	}
+	if pm.upstreamLogger != nil {
+		pm.upstreamLogger.SetEnabled(enabled)
+	}
+	if pm.muxLogger != nil {
+		pm.muxLogger.SetEnabled(enabled)
+	}
 }
 
 func (pm *ProxyManager) apiUnloadSingleModelHandler(c *gin.Context) {

@@ -165,10 +165,11 @@ groups:
 	}
 
 	expected := Config{
-		LogLevel:      "info",
-		LogTimeFormat: "",
-		LogToStdout:   LogToStdoutProxy,
-		StartPort:     5800,
+		LogLevel:       "info",
+		LogTimeFormat:  "",
+		LogToStdout:    LogToStdoutProxy,
+		LoggingEnabled: true,
+		StartPort:      5800,
 		Macros: MacroList{
 			{"svr-path", "path/to/server"},
 		},
@@ -215,12 +216,19 @@ groups:
 				Timeouts:         defaultTimeout,
 			},
 		},
-		HealthCheckTimeout:   15,
-		MetricsMaxInMemory:   1000,
-		MetricsRetentionDays: 30,
-		MetricsQueryMaxRows:  100000,
-		ActivityPersistence:  true,
-		CaptureBuffer:        5,
+		HealthCheckTimeout:      15,
+		MetricsMaxInMemory:      1000,
+		MetricsRetentionDays:    30,
+		MetricsQueryMaxRows:     100000,
+		UsageMetricsPersistence: true,
+		ActivityPersistence:     true,
+		ActivityFields: ActivityFieldsConfig{
+			Model:    true,
+			Tokens:   true,
+			Speeds:   true,
+			Duration: true,
+		},
+		CaptureBuffer: 5,
 		Profiles: map[string][]string{
 			"test": {"model1", "model2"},
 		},

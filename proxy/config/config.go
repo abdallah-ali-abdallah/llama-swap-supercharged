@@ -117,18 +117,28 @@ type HookOnStartup struct {
 	Preload []string `yaml:"preload"`
 }
 
+type ActivityFieldsConfig struct {
+	Model    bool `yaml:"model"`
+	Tokens   bool `yaml:"tokens"`
+	Speeds   bool `yaml:"speeds"`
+	Duration bool `yaml:"duration"`
+}
+
 type Config struct {
 	HealthCheckTimeout         int                    `yaml:"healthCheckTimeout"`
 	LogRequests                bool                   `yaml:"logRequests"`
 	LogLevel                   string                 `yaml:"logLevel"`
 	LogTimeFormat              string                 `yaml:"logTimeFormat"`
 	LogToStdout                string                 `yaml:"logToStdout"`
+	LoggingEnabled             bool                   `yaml:"loggingEnabled"`
 	MetricsMaxInMemory         int                    `yaml:"metricsMaxInMemory"`
 	MetricsDBPath              string                 `yaml:"metricsDBPath"`
 	MetricsRetentionDays       int                    `yaml:"metricsRetentionDays"`
 	MetricsQueryMaxRows        int                    `yaml:"metricsQueryMaxRows"`
+	UsageMetricsPersistence    bool                   `yaml:"usageMetricsPersistence"`
 	ActivityPersistence        bool                   `yaml:"activityPersistence"`
 	ActivityCapturePersistence bool                   `yaml:"activityCapturePersistence"`
+	ActivityFields             ActivityFieldsConfig   `yaml:"activityFields"`
 	CaptureBuffer              int                    `yaml:"captureBuffer"`
 	GlobalTTL                  int                    `yaml:"globalTTL"`
 	Models                     map[string]ModelConfig `yaml:"models"` /* key is model ID */
@@ -226,13 +236,21 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		LogLevel:                   "info",
 		LogTimeFormat:              "",
 		LogToStdout:                LogToStdoutProxy,
+		LoggingEnabled:             true,
 		MetricsMaxInMemory:         1000,
 		MetricsRetentionDays:       30,
 		MetricsQueryMaxRows:        100000,
+		UsageMetricsPersistence:    true,
 		ActivityPersistence:        true,
 		ActivityCapturePersistence: false,
-		CaptureBuffer:              5,
-		GlobalTTL:                  0,
+		ActivityFields: ActivityFieldsConfig{
+			Model:    true,
+			Tokens:   true,
+			Speeds:   true,
+			Duration: true,
+		},
+		CaptureBuffer: 5,
+		GlobalTTL:     0,
 	}
 	if err = yaml.Unmarshal([]byte(yamlStr), &config); err != nil {
 		return Config{}, err

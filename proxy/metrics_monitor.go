@@ -344,6 +344,7 @@ func (mp *metricsMonitor) markMemoryCapturesAvailable(metrics []TokenMetrics) {
 	}
 }
 
+//lint:ignore U1000 retained for API paths that serialize monitor range results directly.
 func (mp *metricsMonitor) getMetricsForRangeJSON(q metricsQuery) ([]byte, bool, error) {
 	metrics, truncated, err := mp.getMetricsForRange(q)
 	if err != nil {
@@ -351,6 +352,84 @@ func (mp *metricsMonitor) getMetricsForRangeJSON(q metricsQuery) ([]byte, bool, 
 	}
 	jsonData, err := json.Marshal(metrics)
 	return jsonData, truncated, err
+}
+
+func (mp *metricsMonitor) persistenceSettings() persistenceSettings {
+	mp.mu.RLock()
+	store := mp.store
+	mp.mu.RUnlock()
+	if store == nil {
+		return persistenceSettings{
+			SQLiteAvailable:      false,
+			RetentionDays:        0,
+			LoggingEnabled:       true,
+			CaptureRedactHeaders: true,
+			ActivityFields: activityFieldsSettings{
+				Model:    true,
+				Tokens:   true,
+				Speeds:   true,
+				Duration: true,
+			},
+		}
+	}
+	return store.settings()
+}
+
+func (mp *metricsMonitor) updatePersistenceSettings(settings persistenceSettings) (persistenceSettings, error) {
+	mp.mu.RLock()
+	store := mp.store
+	mp.mu.RUnlock()
+	if store == nil {
+		return mp.persistenceSettings(), fmt.Errorf("metrics persistence is unavailable")
+	}
+
+	current := store.settings()
+	if settings.DBPath == "" {
+		settings.DBPath = current.DBPath
+	}
+	if settings.DBPath != current.DBPath {
+		newStore, err := newMetricsStoreWithOptions(
+			settings.DBPath,
+			store.retentionDays,
+			store.defaultQueryRows,
+			settings.UsageMetricsPersistence,
+			settings.ActivityPersistence,
+			settings.ActivityCapturePersistence,
+			activityFieldsConfig(settings.ActivityFields),
+			store.logger,
+		)
+		if err != nil {
+			return current, err
+		}
+		if err := newStore.updateSettings(settings); err != nil {
+			newStore.close()
+			return current, err
+		}
+		if err := store.updateSettings(settings); err != nil {
+			newStore.close()
+			return current, err
+		}
+
+		mp.mu.Lock()
+		if mp.store != store {
+			mp.mu.Unlock()
+			newStore.close()
+			return mp.updatePersistenceSettings(settings)
+		}
+		if maxID, err := newStore.maxID(); err == nil && maxID >= mp.nextID {
+			mp.nextID = maxID + 1
+		}
+		mp.store = newStore
+		mp.mu.Unlock()
+
+		store.close()
+		return newStore.settings(), nil
+	}
+
+	if err := store.updateSettings(settings); err != nil {
+		return store.settings(), err
+	}
+	return store.settings(), nil
 }
 
 // wrapHandler wraps the proxy handler to extract token metrics
@@ -381,7 +460,9 @@ func (mp *metricsMonitor) wrapHandler(
 				reqHeaders[key] = values[0]
 			}
 		}
-		redactHeaders(reqHeaders)
+		if mp.captureRedactHeaders() {
+			redactHeaders(reqHeaders)
+		}
 	}
 
 	recorder := newBodyCopier(writer)
@@ -468,7 +549,9 @@ func (mp *metricsMonitor) wrapHandler(
 				respHeaders[key] = values[0]
 			}
 		}
-		redactHeaders(respHeaders)
+		if mp.captureRedactHeaders() {
+			redactHeaders(respHeaders)
+		}
 		delete(respHeaders, "Content-Encoding")
 		capture = &ReqRespCapture{
 			ReqPath:     request.URL.Path,
@@ -492,6 +575,16 @@ func (mp *metricsMonitor) wrapHandler(
 	}
 
 	return nil
+}
+
+func (mp *metricsMonitor) captureRedactHeaders() bool {
+	mp.mu.RLock()
+	store := mp.store
+	mp.mu.RUnlock()
+	if store == nil {
+		return true
+	}
+	return store.settings().CaptureRedactHeaders
 }
 
 func processStreamingResponse(modelID string, start time.Time, body []byte) (TokenMetrics, error) {

@@ -1,7 +1,12 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,6 +32,7 @@ func TestProxyManager_ParseMetricsRangeQuery(t *testing.T) {
 		wantFrom       bool
 		wantTo         bool
 		wantLimit      int
+		wantScope      string
 		wantErr        string
 		wantExactFrom  time.Time
 		wantExactTo    time.Time
@@ -125,6 +131,18 @@ func TestProxyManager_ParseMetricsRangeQuery(t *testing.T) {
 			wantLimit: 25,
 		},
 		{
+			name:      "activity scope",
+			target:    "/api/metrics?range=all&scope=activity",
+			wantRange: "all",
+			wantLimit: 250,
+			wantScope: "activity",
+		},
+		{
+			name:    "unsupported scope",
+			target:  "/api/metrics?range=all&scope=unknown",
+			wantErr: `unsupported metrics scope "unknown"`,
+		},
+		{
 			name:    "custom requires a bound",
 			target:  "/api/metrics?range=custom",
 			wantErr: "custom range requires from or to",
@@ -159,6 +177,7 @@ func TestProxyManager_ParseMetricsRangeQuery(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.wantRange, normalizedRange)
 			require.Equal(t, tt.wantLimit, query.Limit)
+			require.Equal(t, tt.wantScope, query.Scope)
 
 			if tt.wantFrom {
 				require.NotNil(t, query.From)
@@ -183,4 +202,75 @@ func TestProxyManager_ParseMetricsRangeQuery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProxyManager_PersistenceSettingsAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logger := NewLogMonitorWriter(io.Discard)
+	store, err := newMetricsStoreWithOptions(filepath.Join(t.TempDir(), "metrics.db"), 14, 100, true, true, false, allActivityFields(), logger)
+	require.NoError(t, err)
+	monitor := newMetricsMonitor(logger, 10, 0, store)
+	defer monitor.close()
+
+	pm := &ProxyManager{
+		config:         config.Config{ConfigPath: filepath.Join(t.TempDir(), "config.yaml")},
+		metricsMonitor: monitor,
+		proxyLogger:    logger,
+		upstreamLogger: logger,
+		muxLogger:      logger,
+	}
+
+	getRecorder := httptest.NewRecorder()
+	getCtx, _ := gin.CreateTestContext(getRecorder)
+	pm.apiGetPersistenceSettings(getCtx)
+
+	require.Equal(t, http.StatusOK, getRecorder.Code)
+	var current persistenceSettings
+	require.NoError(t, json.Unmarshal(getRecorder.Body.Bytes(), &current))
+	require.True(t, current.SQLiteAvailable)
+	require.True(t, current.UsageMetricsPersistence)
+	require.True(t, current.ActivityPersistence)
+	require.False(t, current.ActivityCapturePersistence)
+	require.True(t, current.LoggingEnabled)
+	require.True(t, current.CaptureRedactHeaders)
+	require.Equal(t, 14, current.RetentionDays)
+
+	nextDBPath := filepath.Join(t.TempDir(), "next.db")
+	updateBody, err := json.Marshal(persistenceSettings{
+		DBPath:                     nextDBPath,
+		LoggingEnabled:             false,
+		UsageMetricsPersistence:    false,
+		ActivityPersistence:        true,
+		ActivityCapturePersistence: true,
+		CaptureRedactHeaders:       false,
+		ActivityFields: activityFieldsSettings{
+			Model:    false,
+			Tokens:   true,
+			Speeds:   false,
+			Duration: true,
+		},
+	})
+	require.NoError(t, err)
+	updateRecorder := httptest.NewRecorder()
+	updateCtx, _ := gin.CreateTestContext(updateRecorder)
+	updateCtx.Request = httptest.NewRequest(http.MethodPut, "/api/settings/persistence", bytes.NewReader(updateBody))
+	updateCtx.Request.Header.Set("Content-Type", "application/json")
+
+	pm.apiUpdatePersistenceSettings(updateCtx)
+
+	require.Equal(t, http.StatusOK, updateRecorder.Code)
+	var updated persistenceSettings
+	require.NoError(t, json.Unmarshal(updateRecorder.Body.Bytes(), &updated))
+	require.Equal(t, nextDBPath, updated.DBPath)
+	require.False(t, updated.LoggingEnabled)
+	require.False(t, updated.UsageMetricsPersistence)
+	require.True(t, updated.ActivityPersistence)
+	require.True(t, updated.ActivityCapturePersistence)
+	require.False(t, updated.CaptureRedactHeaders)
+	require.False(t, updated.ActivityFields.Model)
+	require.True(t, updated.ActivityFields.Tokens)
+	require.False(t, updated.ActivityFields.Speeds)
+	require.True(t, updated.ActivityFields.Duration)
+	require.False(t, logger.Enabled())
 }

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -1187,6 +1188,52 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		assert.Equal(t, "[REDACTED]", capture.ReqHeaders["Authorization"])
 		assert.Equal(t, "application/json", capture.RespHeaders["Content-Type"])
 		assert.Equal(t, "header-value", capture.RespHeaders["X-Custom"])
+	})
+
+	t.Run("can keep full headers when redaction is disabled", func(t *testing.T) {
+		store, err := newMetricsStoreWithOptions(filepath.Join(t.TempDir(), "metrics.db"), 30, 100, true, true, false, allActivityFields(), testLogger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.close()
+		settings := store.settings()
+		settings.CaptureRedactHeaders = false
+		if err := store.updateSettings(settings); err != nil {
+			t.Fatal(err)
+		}
+		mm := newMetricsMonitor(testLogger, 10, 5, store)
+
+		requestBody := `{"model": "test", "prompt": "hello"}`
+		responseBody := `{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`
+
+		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Set-Cookie", "session=response-secret")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(responseBody))
+			return nil
+		}
+
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		req.Header.Set("Authorization", "Bearer request-secret")
+		req.Header.Set("Cookie", "session=request-secret")
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err = mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		assert.NoError(t, err)
+
+		metrics := mm.getMetrics()
+		assert.Equal(t, 1, len(metrics))
+		captureData := mm.getCaptureByID(metrics[0].ID, true)
+		assert.NotNil(t, captureData)
+
+		var capture ReqRespCapture
+		err = json.Unmarshal(captureData, &capture)
+		assert.NoError(t, err)
+		assert.Equal(t, "Bearer request-secret", capture.ReqHeaders["Authorization"])
+		assert.Equal(t, "session=request-secret", capture.ReqHeaders["Cookie"])
+		assert.Equal(t, "session=response-secret", capture.RespHeaders["Set-Cookie"])
 	})
 
 	t.Run("does not capture when disabled", func(t *testing.T) {

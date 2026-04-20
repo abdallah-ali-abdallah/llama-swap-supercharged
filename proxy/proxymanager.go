@@ -97,26 +97,19 @@ type ProxyManager struct {
 }
 
 func openMetricsStore(proxyConfig config.Config, logger *LogMonitor) *metricsStore {
-	dbPath := strings.TrimSpace(proxyConfig.MetricsDBPath)
-	if dbPath == "" {
-		if proxyConfig.ConfigPath == "" {
-			return nil
-		}
-		dbPath = filepath.Join(filepath.Dir(proxyConfig.ConfigPath), "llama-swap-metrics.db")
-	} else if !filepath.IsAbs(dbPath) {
-		baseDir := "."
-		if proxyConfig.ConfigPath != "" {
-			baseDir = filepath.Dir(proxyConfig.ConfigPath)
-		}
-		dbPath = filepath.Join(baseDir, dbPath)
+	dbPath, ok := defaultMetricsDBPath(proxyConfig)
+	if !ok {
+		return nil
 	}
 
 	store, err := newMetricsStoreWithOptions(
 		dbPath,
 		proxyConfig.MetricsRetentionDays,
 		proxyConfig.MetricsQueryMaxRows,
+		proxyConfig.UsageMetricsPersistence,
 		proxyConfig.ActivityPersistence,
 		proxyConfig.ActivityCapturePersistence,
+		proxyConfig.ActivityFields,
 		logger,
 	)
 	if err != nil {
@@ -126,10 +119,61 @@ func openMetricsStore(proxyConfig config.Config, logger *LogMonitor) *metricsSto
 		return nil
 	}
 
+	preferredPath := strings.TrimSpace(store.preferredPath())
+	if preferredPath != "" {
+		resolvedPath := resolveMetricsDBPath(proxyConfig, preferredPath)
+		if resolvedPath != dbPath {
+			newStore, err := newMetricsStoreWithOptions(
+				resolvedPath,
+				proxyConfig.MetricsRetentionDays,
+				proxyConfig.MetricsQueryMaxRows,
+				proxyConfig.UsageMetricsPersistence,
+				proxyConfig.ActivityPersistence,
+				proxyConfig.ActivityCapturePersistence,
+				proxyConfig.ActivityFields,
+				logger,
+			)
+			if err != nil {
+				if logger != nil {
+					logger.Warnf("failed to open selected metrics database %s: %v", resolvedPath, err)
+				}
+			} else {
+				store.close()
+				store = newStore
+				dbPath = resolvedPath
+			}
+		}
+	}
+
 	if logger != nil {
 		logger.Infof("metrics persistence enabled: %s", dbPath)
 	}
 	return store
+}
+
+func defaultMetricsDBPath(proxyConfig config.Config) (string, bool) {
+	dbPath := strings.TrimSpace(proxyConfig.MetricsDBPath)
+	if dbPath == "" {
+		if proxyConfig.ConfigPath == "" {
+			return "", false
+		}
+		dbPath = filepath.Join(filepath.Dir(proxyConfig.ConfigPath), "llama-swap-metrics.db")
+	} else {
+		dbPath = resolveMetricsDBPath(proxyConfig, dbPath)
+	}
+	return dbPath, true
+}
+
+func resolveMetricsDBPath(proxyConfig config.Config, dbPath string) string {
+	dbPath = strings.TrimSpace(dbPath)
+	if filepath.IsAbs(dbPath) {
+		return filepath.Clean(dbPath)
+	}
+	baseDir := "."
+	if proxyConfig.ConfigPath != "" {
+		baseDir = filepath.Dir(proxyConfig.ConfigPath)
+	}
+	return filepath.Clean(filepath.Join(baseDir, dbPath))
 }
 
 func New(proxyConfig config.Config) *ProxyManager {
@@ -160,6 +204,10 @@ func New(proxyConfig config.Config) *ProxyManager {
 
 	if proxyConfig.LogRequests {
 		proxyLogger.Warn("LogRequests configuration is deprecated. Use logLevel instead.")
+	}
+	if !proxyConfig.LoggingEnabled {
+		proxyLogger.SetEnabled(false)
+		upstreamLogger.SetEnabled(false)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(proxyConfig.LogLevel)) {
@@ -214,6 +262,17 @@ func New(proxyConfig config.Config) *ProxyManager {
 	}
 
 	metricsStore := openMetricsStore(proxyConfig, proxyLogger)
+	if metricsStore != nil && !proxyConfig.LoggingEnabled {
+		settings := metricsStore.settings()
+		settings.LoggingEnabled = false
+		if err := metricsStore.updateSettings(settings); err != nil && proxyLogger.Enabled() {
+			proxyLogger.Warnf("failed to save logging setting: %v", err)
+		}
+	}
+	if metricsStore != nil && !metricsStore.settings().LoggingEnabled {
+		proxyLogger.SetEnabled(false)
+		upstreamLogger.SetEnabled(false)
+	}
 
 	peerProxy, err := NewPeerProxy(proxyConfig.Peers, proxyLogger)
 	if err != nil {

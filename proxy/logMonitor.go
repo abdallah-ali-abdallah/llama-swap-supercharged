@@ -116,6 +116,8 @@ type LogMonitor struct {
 
 	// timestamps
 	timeFormat string
+
+	enabled bool
 }
 
 func NewLogMonitor() *LogMonitor {
@@ -130,12 +132,20 @@ func NewLogMonitorWriter(stdout io.Writer) *LogMonitor {
 		level:      LevelInfo,
 		prefix:     "",
 		timeFormat: "",
+		enabled:    true,
 	}
 }
 
 func (w *LogMonitor) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
+	}
+
+	w.mu.RLock()
+	enabled := w.enabled
+	w.mu.RUnlock()
+	if !enabled {
+		return len(p), nil
 	}
 
 	n, err = w.stdout.Write(p)
@@ -200,6 +210,21 @@ func (w *LogMonitor) SetLogTimeFormat(timeFormat string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.timeFormat = timeFormat
+}
+
+func (w *LogMonitor) SetEnabled(enabled bool) {
+	w.mu.Lock()
+	w.enabled = enabled
+	w.mu.Unlock()
+	if !enabled {
+		w.Clear()
+	}
+}
+
+func (w *LogMonitor) Enabled() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.enabled
 }
 
 func (w *LogMonitor) formatMessage(level string, msg string) []byte {

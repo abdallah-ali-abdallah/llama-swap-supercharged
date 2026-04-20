@@ -114,6 +114,43 @@ func TestWrite_LogTimeFormat(t *testing.T) {
 	}
 }
 
+func TestLogMonitor_Disabled(t *testing.T) {
+	logMonitor := NewLogMonitorWriter(io.Discard)
+	events := make(chan struct{}, 2)
+	defer logMonitor.OnLogData(func(data []byte) {
+		events <- struct{}{}
+	})()
+
+	logMonitor.Info("before")
+	select {
+	case <-events:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pre-disable log event")
+	}
+
+	logMonitor.SetEnabled(false)
+	n, err := logMonitor.Write([]byte("hidden"))
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	if n != len("hidden") {
+		t.Fatalf("Expected disabled write length %d, got %d", len("hidden"), n)
+	}
+	logMonitor.Info("also hidden")
+
+	if logMonitor.Enabled() {
+		t.Fatalf("Expected monitor to be disabled")
+	}
+	if history := logMonitor.GetHistory(); len(history) != 0 {
+		t.Fatalf("Expected empty history when disabled, got %q", string(history))
+	}
+	select {
+	case <-events:
+		t.Fatal("disabled monitor broadcast a log event")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestCircularBuffer_WrapAround(t *testing.T) {
 	// Create a small buffer to test wrap-around
 	cb := newCircularBuffer(10)
