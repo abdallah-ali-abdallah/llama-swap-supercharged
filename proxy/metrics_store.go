@@ -564,10 +564,44 @@ func (s *metricsStore) updateSettings(settings persistenceSettings) error {
 		settings.ActivityCapturePersistence = false
 	}
 
-	s.mu.Lock()
 	if settings.DBPath == "" {
 		settings.DBPath = s.path
 	}
+	if err := s.saveSettings(settings); err != nil {
+		return err
+	}
+
+	s.applySettings(settings)
+	return nil
+}
+
+func (s *metricsStore) validateSettings(settings persistenceSettings) error {
+	if !settings.ActivityPersistence {
+		settings.ActivityCapturePersistence = false
+	}
+	if settings.DBPath == "" {
+		settings.DBPath = s.path
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("validate persistence settings: %w", err)
+	}
+	if err := s.saveSettingsWithExec(tx, settings); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && s.logger != nil {
+			s.logger.Warnf("failed to roll back persistence settings validation: %v", rollbackErr)
+		}
+		return err
+	}
+	if err := tx.Rollback(); err != nil {
+		return fmt.Errorf("roll back persistence settings validation: %w", err)
+	}
+	return nil
+}
+
+func (s *metricsStore) applySettings(settings persistenceSettings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.selectedPath = settings.DBPath
 	s.loggingEnabled = settings.LoggingEnabled
 	s.usageMetricsPersistence = settings.UsageMetricsPersistence
@@ -575,18 +609,6 @@ func (s *metricsStore) updateSettings(settings persistenceSettings) error {
 	s.activityCapturePersistence = settings.ActivityCapturePersistence
 	s.captureRedactHeaders = settings.CaptureRedactHeaders
 	s.activityFields = settings.ActivityFields
-	current := persistenceSettings{
-		UsageMetricsPersistence:    s.usageMetricsPersistence,
-		DBPath:                     s.selectedPath,
-		LoggingEnabled:             s.loggingEnabled,
-		ActivityPersistence:        s.activityPersistence,
-		ActivityCapturePersistence: s.activityCapturePersistence,
-		CaptureRedactHeaders:       s.captureRedactHeaders,
-		ActivityFields:             s.activityFields,
-	}
-	s.mu.Unlock()
-
-	return s.saveSettings(current)
 }
 
 func (s *metricsStore) loadSettings() error {
@@ -636,6 +658,27 @@ func (s *metricsStore) preferredPath() string {
 }
 
 func (s *metricsStore) saveSettings(settings persistenceSettings) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin persistence settings save: %w", err)
+	}
+	if err := s.saveSettingsWithExec(tx, settings); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && s.logger != nil {
+			s.logger.Warnf("failed to roll back persistence settings save: %v", rollbackErr)
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit persistence settings save: %w", err)
+	}
+	return nil
+}
+
+type persistenceSettingsExec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func (s *metricsStore) saveSettingsWithExec(exec persistenceSettingsExec, settings persistenceSettings) error {
 	values := map[string]bool{
 		"logging_enabled":              settings.LoggingEnabled,
 		"usage_metrics_persistence":    settings.UsageMetricsPersistence,
@@ -653,7 +696,7 @@ func (s *metricsStore) saveSettings(settings persistenceSettings) error {
 	if dbPath == "" {
 		dbPath = s.path
 	}
-	if _, err := s.db.Exec(
+	if _, err := exec.Exec(
 		"INSERT OR REPLACE INTO persistence_settings (key, value, updated_ms) VALUES (?, ?, ?)",
 		"db_path",
 		dbPath,
@@ -662,7 +705,7 @@ func (s *metricsStore) saveSettings(settings persistenceSettings) error {
 		return fmt.Errorf("save persistence setting db_path: %w", err)
 	}
 	for key, value := range values {
-		if _, err := s.db.Exec(
+		if _, err := exec.Exec(
 			"INSERT OR REPLACE INTO persistence_settings (key, value, updated_ms) VALUES (?, ?, ?)",
 			key,
 			boolSetting(value),

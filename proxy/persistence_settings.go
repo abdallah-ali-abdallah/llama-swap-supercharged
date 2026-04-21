@@ -135,6 +135,11 @@ func (pm *ProxyManager) writePersistenceSettingsToYAML(settings persistenceSetti
 		return err
 	}
 
+	return nil
+}
+
+func (pm *ProxyManager) applyPersistenceSettingsToConfig(settings persistenceSettings) {
+	settings = normalizePersistenceSettings(settings)
 	pm.config.MetricsDBPath = settings.DBPath
 	pm.config.LoggingEnabled = settings.LoggingEnabled
 	pm.config.UsageMetricsPersistence = settings.UsageMetricsPersistence
@@ -142,7 +147,6 @@ func (pm *ProxyManager) writePersistenceSettingsToYAML(settings persistenceSetti
 	pm.config.ActivityCapturePersistence = settings.ActivityCapturePersistence
 	pm.config.CaptureRedactHeaders = settings.CaptureRedactHeaders
 	pm.config.ActivityFields = activityFieldsConfig(settings.ActivityFields)
-	return nil
 }
 
 func writePersistenceSettingsYAML(path string, settings persistenceSettings) error {

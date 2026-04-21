@@ -67,6 +67,86 @@ func TestProxyManager_PersistenceSettingsWritesYAML(t *testing.T) {
 	require.True(t, updatedConfig.ActivityFields.Duration)
 }
 
+func TestProxyManager_PersistenceSettingsDoesNotPartiallyUpdateOnDBSwitchFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	dbPath := filepath.Join(dir, "metrics.db")
+	writeTestConfig(t, configPath, dbPath)
+	cfg, err := config.LoadConfig(configPath)
+	require.NoError(t, err)
+
+	pm := New(cfg)
+	defer pm.StopProcesses(StopImmediately)
+	require.True(t, pm.proxyLogger.Enabled())
+
+	blockerPath := filepath.Join(dir, "not-a-directory")
+	require.NoError(t, os.WriteFile(blockerPath, []byte("block"), 0o644))
+	badDBPath := filepath.Join(blockerPath, "metrics.db")
+	body, err := json.Marshal(persistenceSettings{
+		DBPath:                     badDBPath,
+		LoggingEnabled:             false,
+		UsageMetricsPersistence:    false,
+		ActivityPersistence:        false,
+		ActivityCapturePersistence: true,
+		CaptureRedactHeaders:       false,
+		ActivityFields: activityFieldsSettings{
+			Model:    false,
+			Tokens:   false,
+			Speeds:   false,
+			Duration: false,
+		},
+	})
+	require.NoError(t, err)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/settings/persistence", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	pm.apiUpdatePersistenceSettings(ctx)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	updatedConfig, err := config.LoadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, dbPath, updatedConfig.MetricsDBPath)
+	require.True(t, updatedConfig.LoggingEnabled)
+	require.True(t, updatedConfig.UsageMetricsPersistence)
+	require.True(t, updatedConfig.ActivityPersistence)
+	require.False(t, updatedConfig.ActivityCapturePersistence)
+	require.True(t, updatedConfig.CaptureRedactHeaders)
+	require.True(t, updatedConfig.ActivityFields.Model)
+	require.True(t, updatedConfig.ActivityFields.Tokens)
+	require.True(t, updatedConfig.ActivityFields.Speeds)
+	require.True(t, updatedConfig.ActivityFields.Duration)
+
+	require.Equal(t, dbPath, pm.config.MetricsDBPath)
+	require.True(t, pm.config.LoggingEnabled)
+	require.True(t, pm.config.UsageMetricsPersistence)
+	require.True(t, pm.config.ActivityPersistence)
+	require.False(t, pm.config.ActivityCapturePersistence)
+	require.True(t, pm.config.CaptureRedactHeaders)
+	require.True(t, pm.config.ActivityFields.Model)
+	require.True(t, pm.config.ActivityFields.Tokens)
+	require.True(t, pm.config.ActivityFields.Speeds)
+	require.True(t, pm.config.ActivityFields.Duration)
+	require.True(t, pm.proxyLogger.Enabled())
+
+	current := pm.metricsMonitor.persistenceSettings()
+	require.Equal(t, dbPath, current.DBPath)
+	require.True(t, current.LoggingEnabled)
+	require.True(t, current.UsageMetricsPersistence)
+	require.True(t, current.ActivityPersistence)
+	require.False(t, current.ActivityCapturePersistence)
+	require.True(t, current.CaptureRedactHeaders)
+	require.True(t, current.ActivityFields.Model)
+	require.True(t, current.ActivityFields.Tokens)
+	require.True(t, current.ActivityFields.Speeds)
+	require.True(t, current.ActivityFields.Duration)
+}
+
 func TestProxyManager_PersistenceSettingsYAMLOverridesSQLite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

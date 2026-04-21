@@ -400,18 +400,28 @@ func (mp *metricsMonitor) setYAMLConflicts(conflicts []persistenceConflict) {
 	}
 }
 
-func (mp *metricsMonitor) updatePersistenceSettings(settings persistenceSettings) (persistenceSettings, error) {
+type stagedPersistenceSettingsUpdate struct {
+	monitor          *metricsMonitor
+	currentStore     *metricsStore
+	newStore         *metricsStore
+	settings         persistenceSettings
+	rollbackSettings *persistenceSettings
+	closed           bool
+}
+
+func (mp *metricsMonitor) stagePersistenceSettings(settings persistenceSettings) (*stagedPersistenceSettingsUpdate, persistenceSettings, error) {
 	mp.mu.RLock()
 	store := mp.store
 	mp.mu.RUnlock()
 	if store == nil {
-		return mp.persistenceSettings(), fmt.Errorf("metrics persistence is unavailable")
+		return nil, mp.persistenceSettings(), fmt.Errorf("metrics persistence is unavailable")
 	}
 
 	current := store.settings()
 	if settings.DBPath == "" {
 		settings.DBPath = current.DBPath
 	}
+	settings = normalizePersistenceSettings(settings)
 	if settings.DBPath != current.DBPath {
 		newStore, err := newMetricsStoreWithOptions(
 			settings.DBPath,
@@ -424,37 +434,96 @@ func (mp *metricsMonitor) updatePersistenceSettings(settings persistenceSettings
 			store.logger,
 		)
 		if err != nil {
-			return current, err
+			return nil, current, err
 		}
 		if err := newStore.updateSettings(settings); err != nil {
 			newStore.close()
-			return current, err
+			return nil, current, err
 		}
-		if err := store.updateSettings(settings); err != nil {
+		if err := store.saveSettings(settings); err != nil {
 			newStore.close()
-			return current, err
+			return nil, current, err
 		}
+		rollbackSettings := current
 
-		mp.mu.Lock()
-		if mp.store != store {
-			mp.mu.Unlock()
-			newStore.close()
-			return mp.updatePersistenceSettings(settings)
+		return &stagedPersistenceSettingsUpdate{
+			monitor:          mp,
+			currentStore:     store,
+			newStore:         newStore,
+			settings:         settings,
+			rollbackSettings: &rollbackSettings,
+		}, newStore.settings(), nil
+	}
+
+	if err := store.validateSettings(settings); err != nil {
+		return nil, current, err
+	}
+	return &stagedPersistenceSettingsUpdate{
+		monitor:      mp,
+		currentStore: store,
+		settings:     settings,
+	}, current, nil
+}
+
+func (update *stagedPersistenceSettingsUpdate) commit() (persistenceSettings, error) {
+	if update == nil || update.closed {
+		return persistenceSettings{}, fmt.Errorf("persistence settings update is unavailable")
+	}
+
+	if update.newStore == nil {
+		if err := update.currentStore.updateSettings(update.settings); err != nil {
+			return update.currentStore.settings(), err
 		}
-		if maxID, err := newStore.maxID(); err == nil && maxID >= mp.nextID {
-			mp.nextID = maxID + 1
-		}
-		mp.store = newStore
+		update.closed = true
+		return update.currentStore.settings(), nil
+	}
+
+	mp := update.monitor
+	mp.mu.Lock()
+	if mp.store != update.currentStore {
 		mp.mu.Unlock()
-
-		store.close()
-		return newStore.settings(), nil
+		update.close()
+		return mp.persistenceSettings(), fmt.Errorf("metrics persistence store changed while updating settings")
 	}
-
-	if err := store.updateSettings(settings); err != nil {
-		return store.settings(), err
+	if maxID, err := update.newStore.maxID(); err == nil && maxID >= mp.nextID {
+		mp.nextID = maxID + 1
 	}
-	return store.settings(), nil
+	oldStore := update.currentStore
+	activeStore := update.newStore
+	mp.store = activeStore
+	update.newStore = nil
+	update.rollbackSettings = nil
+	update.closed = true
+	mp.mu.Unlock()
+
+	oldStore.close()
+	return activeStore.settings(), nil
+}
+
+func (update *stagedPersistenceSettingsUpdate) close() {
+	if update == nil || update.closed {
+		return
+	}
+	update.closed = true
+	if update.newStore != nil {
+		update.newStore.close()
+		update.newStore = nil
+	}
+	if update.rollbackSettings != nil {
+		if err := update.currentStore.saveSettings(*update.rollbackSettings); err != nil && update.currentStore.logger != nil {
+			update.currentStore.logger.Warnf("failed to roll back staged persistence settings: %v", err)
+		}
+		update.rollbackSettings = nil
+	}
+}
+
+func (mp *metricsMonitor) updatePersistenceSettings(settings persistenceSettings) (persistenceSettings, error) {
+	update, current, err := mp.stagePersistenceSettings(settings)
+	if err != nil {
+		return current, err
+	}
+	defer update.close()
+	return update.commit()
 }
 
 // wrapHandler wraps the proxy handler to extract token metrics

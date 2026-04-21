@@ -448,16 +448,24 @@ func (pm *ProxyManager) apiUpdatePersistenceSettings(c *gin.Context) {
 	settings.DBPath = resolveMetricsDBPath(pm.config, settings.DBPath)
 	settings = normalizePersistenceSettings(settings)
 
+	update, _, err := pm.metricsMonitor.stagePersistenceSettings(settings)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	defer update.close()
+
 	if err := pm.writePersistenceSettingsToYAML(settings); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	updated, err := pm.metricsMonitor.updatePersistenceSettings(settings)
+	updated, err := update.commit()
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
+	pm.applyPersistenceSettingsToConfig(updated)
 	pm.applyLoggingEnabled(updated.LoggingEnabled)
 	pm.metricsMonitor.setYAMLConflicts(nil)
 	updated.YAMLAvailable = true

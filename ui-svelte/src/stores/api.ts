@@ -3,6 +3,8 @@ import type { Model, Metrics, VersionInfo, LogData, APIEventEnvelope, ReqRespCap
 import { connectionState } from "./theme";
 
 const LOG_LENGTH_LIMIT = 1024 * 100; /* 100KB of log data */
+export const REALTIME_METRICS_MAX_AGE_MS = 10 * 60 * 1000;
+export const REALTIME_METRICS_LIMIT = 5000;
 
 // Stores
 export const models = writable<Model[]>([]);
@@ -17,6 +19,16 @@ export const versionInfo = writable<VersionInfo>({
 });
 
 let apiEventSource: EventSource | null = null;
+
+export function mergeRealtimeMetrics(newMetrics: Metrics[], prevMetrics: Metrics[], now = Date.now()): Metrics[] {
+  const cutoff = now - REALTIME_METRICS_MAX_AGE_MS;
+  return [...newMetrics, ...prevMetrics]
+    .filter((metric) => {
+      const timestamp = Date.parse(metric.timestamp);
+      return Number.isNaN(timestamp) || timestamp >= cutoff;
+    })
+    .slice(0, REALTIME_METRICS_LIMIT);
+}
 
 function appendLog(newData: string, store: typeof proxyLogs | typeof upstreamLogs): void {
   store.update((prev) => {
@@ -83,7 +95,7 @@ export function enableAPIEvents(enabled: boolean): void {
 
           case "metrics": {
             const newMetrics = JSON.parse(message.data) as Metrics[];
-            metrics.update((prevMetrics) => [...newMetrics, ...prevMetrics]);
+            metrics.update((prevMetrics) => mergeRealtimeMetrics(newMetrics, prevMetrics));
             break;
           }
           case "inflight": {

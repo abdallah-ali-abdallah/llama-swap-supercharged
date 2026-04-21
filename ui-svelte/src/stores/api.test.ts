@@ -1,5 +1,55 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { getModelConfiguration } from "./api";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
+import type { Metrics } from "../lib/types";
+import { getModelConfiguration, mergeRealtimeMetrics, REALTIME_METRICS_LIMIT, REALTIME_METRICS_MAX_AGE_MS } from "./api";
+
+function metric(overrides: Partial<Metrics>): Metrics {
+  return {
+    id: 0,
+    timestamp: "2026-04-20T12:00:00.000Z",
+    model: "model-a",
+    cache_tokens: 0,
+    new_input_tokens: 0,
+    output_tokens: 0,
+    prompt_per_second: -1,
+    tokens_per_second: -1,
+    duration_ms: 0,
+    has_capture: false,
+    ...overrides,
+  };
+}
+
+describe("api realtime metrics", () => {
+  test("drops metrics outside the realtime retention window", () => {
+    const now = Date.parse("2026-04-20T12:10:00.000Z");
+    const recentTimestamp = new Date(now - REALTIME_METRICS_MAX_AGE_MS + 1).toISOString();
+    const oldTimestamp = new Date(now - REALTIME_METRICS_MAX_AGE_MS - 1).toISOString();
+
+    const merged = mergeRealtimeMetrics(
+      [metric({ id: 1, timestamp: recentTimestamp }), metric({ id: 2, timestamp: oldTimestamp })],
+      [metric({ id: 3, timestamp: recentTimestamp }), metric({ id: 4, timestamp: oldTimestamp })],
+      now,
+    );
+
+    expect(merged.map((item) => item.id)).toEqual([1, 3]);
+  });
+
+  test("keeps only the newest realtime metrics when over the limit", () => {
+    const now = Date.parse("2026-04-20T12:10:00.000Z");
+    const total = REALTIME_METRICS_LIMIT + 5;
+    const metrics = Array.from({ length: total }, (_, index) =>
+      metric({
+        id: total - index,
+        timestamp: new Date(now - index).toISOString(),
+      }),
+    );
+
+    const merged = mergeRealtimeMetrics([], metrics, now);
+
+    expect(merged).toHaveLength(REALTIME_METRICS_LIMIT);
+    expect(merged[0].id).toBe(total);
+    expect(merged[REALTIME_METRICS_LIMIT - 1].id).toBe(6);
+  });
+});
 
 describe("api", () => {
   afterEach(() => {
