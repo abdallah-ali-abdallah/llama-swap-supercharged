@@ -273,7 +273,7 @@
             <tr>
               <th class="px-4 py-3">Model</th>
               <th class="px-4 py-3 text-right">Requests</th>
-              <th class="px-4 py-3 text-right">New input</th>
+              <th class="px-4 py-3 text-right">Unique processed token</th>
               <th class="px-4 py-3 text-right">Cached</th>
               <th class="px-4 py-3 text-right">Generated</th>
               <th class="px-4 py-3 text-right">Total tokens</th>

@@ -289,7 +289,7 @@ function modelSummaries(metrics: Metrics[]): ModelMetricSummary[] {
 function globalSeries(metrics: Metrics[]): DashboardStats["series"] {
   return {
     tokenVolume: [
-      lineSeries(metrics, "New input", SERIES_COLORS.newInput, (metric) => Math.max(0, metric.new_input_tokens || 0)),
+      lineSeries(metrics, "Unique processed token", SERIES_COLORS.newInput, (metric) => Math.max(0, metric.new_input_tokens || 0)),
       lineSeries(metrics, "Cached", SERIES_COLORS.cached, (metric) => (metric.cache_tokens >= 0 ? metric.cache_tokens : null)),
       lineSeries(metrics, "Generated", SERIES_COLORS.output, (metric) => Math.max(0, metric.output_tokens || 0)),
     ],

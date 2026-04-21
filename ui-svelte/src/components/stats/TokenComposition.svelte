@@ -11,7 +11,7 @@
   const nf = new Intl.NumberFormat();
 
   let segments = $derived([
-    { label: "New input", value: tokens.newInput, color: "#73bf69" },
+    { label: "Unique processed token", value: tokens.newInput, color: "#73bf69" },
     { label: "Cached", value: tokens.cached, color: "#5794f2" },
     { label: "Generated", value: tokens.output, color: "#f2cc0c" },
   ]);
@@ -59,4 +59,3 @@
     <span class="text-txtsecondary"> cache hit rate across input tokens</span>
   </div>
 </section>
-
