@@ -1,17 +1,30 @@
 ![llama-swap header image](docs/assets/hero3.webp)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/mostlygeek/llama-swap/total)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/mostlygeek/llama-swap/go-ci.yml)
-![GitHub Repo stars](https://img.shields.io/github/stars/mostlygeek/llama-swap)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/abdallah-ali-abdallah/llama-swap-supercharged/total)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/abdallah-ali-abdallah/llama-swap-supercharged/go-ci.yml)
+![GitHub Repo stars](https://img.shields.io/github/stars/abdallah-ali-abdallah/llama-swap-supercharged)
 
-# llama-swap
+# llama-swap supercharged
+
+This fork builds on [mostlygeek/llama-swap](https://github.com/mostlygeek/llama-swap) with a deeper operations dashboard, persisted usage history, request capture exports, runtime persistence controls, llama.cpp memory reporting, and model configuration inspection.
 
 Run multiple generative AI models on your machine and hot-swap between them on demand. llama-swap works with any OpenAI and Anthropic API compatible server and is used by thousands of people to power their local AI workflows.
 
-Built in Go for performance and simplicity, llama-swap has zero dependencies and is incredibly easy to set up. Get started in minutes - just one binary and one configuration file.
+Built in Go for performance and simplicity, llama-swap is easy to set up and runs as one binary with one configuration file. The supercharged features use an embedded SQLite database, so historical metrics and Activity rows do not require a separate service.
+
+## Supercharged highlights
+
+- Persistent dashboard metrics in SQLite, with realtime, preset historical ranges, custom time windows, row limits, and retention controls.
+- Rich usage analytics: total tokens, new prompt tokens, cached prompt tokens, cache hit rate, generation speed, prompt processing speed, request duration, token composition, histograms, and per-model drilldowns.
+- Persisted Activity history with optional request/response capture storage, per-field retention controls, redacted headers, and JSON capture downloads.
+- Runtime Settings page for SQLite database path, logging, usage persistence, Activity persistence, capture persistence, redaction, saved Activity fields, YAML writeback, and YAML-vs-SQLite conflict visibility.
+- Models page upgrades for llama.cpp memory tracking, including device and host totals plus model, KV, compute, output, and runtime breakdowns parsed from llama.cpp loading logs.
+- Model configuration viewer that resolves aliases and shows command, proxy, TTL, environment, raw YAML, and interpreted llama-server options for context, batching, offload, and vision settings.
+- More accurate token accounting: cached prompt tokens are separated from newly processed input tokens, with cache hit rate exposed in the UI and metrics API.
+- Per-model `excludeFromMetrics` support for hiding internal, test, or utility models from Activity and dashboard statistics.
 
 ## Features:
 
-- ✅ Easy to deploy and configure: one binary, one configuration file. no external dependencies
+- ✅ Easy to deploy and configure: one binary, one configuration file, no external services
 - ✅ On-demand model switching
 - ✅ Use any local OpenAI compatible server (llama.cpp, vllm, tabbyAPI, stable-diffusion.cpp, etc.)
   - future proof, upgrade your inference servers at any time.
@@ -42,6 +55,10 @@ Built in Go for performance and simplicity, llama-swap has zero dependencies and
   - `/models/unload` - manually unload running models ([#58](https://github.com/mostlygeek/llama-swap/issues/58))
   - `/running` - list currently running models ([#61](https://github.com/mostlygeek/llama-swap/issues/61))
   - `/log` - remote log monitoring
+  - `/api/metrics` - realtime and persisted historical metrics with `range`, `from`, `to`, `limit`, and `scope`
+  - `/api/captures/:id` - compressed request/response capture retrieval
+  - `/api/settings/persistence` - runtime persistence and logging controls
+  - `/api/models/config/:model_id` - resolved model configuration and source YAML
   - `/health` - just returns "OK"
 - ✅ API Key support - define keys to restrict access to API endpoints
 - ✅ Customizable
@@ -49,28 +66,48 @@ Built in Go for performance and simplicity, llama-swap has zero dependencies and
   - Automatic unloading of models after timeout by setting a `ttl`
   - Reliable Docker and Podman support using `cmd` and `cmdStop` together
   - Preload models on startup with `hooks` ([#235](https://github.com/mostlygeek/llama-swap/pull/235))
+  - Persist metrics and Activity history in SQLite, with retention and query limits
+  - Hide selected models from metrics with `excludeFromMetrics`
 
-### Web UI
+### Supercharged Web UI
 
-llama-swap includes a real time web interface with a playground for testing out all sorts of local models:
+llama-swap includes a real time web interface with a playground for testing out all sorts of local models. This fork adds a dedicated dashboard, persistent Activity history, capture export tooling, model memory reporting, resolved configuration inspection, and runtime Settings controls.
 
-<img width="1125" height="876" alt="image" src="https://github.com/user-attachments/assets/8ee41947-97af-463d-b0f0-8e9c478fac07" />
+#### Dashboard
 
-View detailed token metrics:
+Track token consumption, cache efficiency, performance, historical ranges, global composition, and per-model drilldowns from one page.
 
-<img width="1111" height="515" alt="image" src="https://github.com/user-attachments/assets/64bfb280-d7a3-4126-971a-a128fd40410c" />
+<img width="1440" height="925" alt="Supercharged dashboard with token totals, cache hit rate, speed charts, and per-model consumption" src="docs/assets/readme/supercharged-dashboard.png" />
 
-Inspect request and responses:
+#### Activity History
 
-<img width="1111" height="720" alt="image" src="https://github.com/user-attachments/assets/24fe4aca-1448-4d7c-b9e8-a967589bda6c" />
+Browse completed requests across realtime or persisted historical ranges, including cached tokens, new input tokens, generated tokens, speed, duration, and capture availability.
 
-Manually load and unload models:
+<img width="1440" height="925" alt="Activity history table with cached tokens, prompt tokens, generation speed, duration, and capture buttons" src="docs/assets/readme/supercharged-activity.png" />
 
-<img width="1109" height="719" alt="image" src="https://github.com/user-attachments/assets/02b1e1f2-abd0-4050-84ae-facd66ff01c4" />
+#### Capture Export
 
-Real time log streaming:
+Open saved captures, inspect request/response metadata, pretty-print JSON, extract streaming chat text, copy bodies, and download a structured JSON export.
 
-<img width="1107" height="559" alt="image" src="https://github.com/user-attachments/assets/39669a10-cff2-409e-836a-5bad8bd0140c" />
+<img width="896" height="900" alt="Expanded capture dialog showing a hello world curl request, JSON request and response bodies, and the JSON download action" src="docs/assets/readme/supercharged-capture-export.png" />
+
+#### Model Memory
+
+See loaded llama.cpp memory usage by model, with device and host totals and per-component detail for model weights, KV cache, compute buffers, output buffers, and runtime overhead.
+
+<img width="1440" height="925" alt="Models page showing llama.cpp memory totals and expanded memory details" src="docs/assets/readme/supercharged-model-memory.png" />
+
+#### Model Configuration
+
+Open any model configuration, resolve aliases to the real model ID, inspect the command and raw YAML, and interpret llama-server flags into readable categories.
+
+<img width="1152" height="900" alt="Model configuration dialog with interpreted llama.cpp command options and raw YAML tab" src="docs/assets/readme/supercharged-model-configuration.png" />
+
+#### Persistence Settings
+
+Control what gets saved without restarting: SQLite path, logging, dashboard metrics, Activity rows, capture persistence, header redaction, saved Activity fields, YAML writeback, and conflict handling.
+
+<img width="1440" height="925" alt="Settings page for SQLite persistence, logging, saved Activity fields, and capture redaction controls" src="docs/assets/readme/supercharged-settings.png" />
 
 ## Installation
 
@@ -81,6 +118,9 @@ llama-swap can be installed in multiple ways
 3. WinGet
 4. From release binaries
 5. From source
+
+> [!NOTE]
+> Docker, Homebrew, WinGet, and release binary instructions below point at the upstream llama-swap distribution channels unless this fork publishes matching artifacts. Build this fork from source to use the supercharged dashboard, persistence, capture export, memory, and configuration features.
 
 ### Docker Install ([download images](https://github.com/mostlygeek/llama-swap/pkgs/container/llama-swap))
 
@@ -156,7 +196,7 @@ Binaries are available on the [release](https://github.com/mostlygeek/llama-swap
 ### Building from source
 
 1. Building requires Go and Node.js (for UI).
-1. `git clone https://github.com/mostlygeek/llama-swap.git`
+1. `git clone https://github.com/abdallah-ali-abdallah/llama-swap-supercharged.git`
 1. `make clean all`
 1. look in the `build/` subdirectory for the llama-swap binary
 
@@ -183,6 +223,15 @@ Almost all configuration settings are optional and can be added one step at a ti
   - `matrix` to run concurrent models with a custom swap logic DSL
   - `hooks` to run things on startup
   - `macros` reusable snippets
+  - `metricsDBPath` to choose where SQLite dashboard and Activity history are stored
+  - `metricsRetentionDays` to clean old persisted metrics automatically
+  - `metricsQueryMaxRows` to cap historical dashboard and Activity queries
+  - `usageMetricsPersistence` to enable or disable persisted dashboard usage metrics
+  - `activityPersistence` to enable or disable persisted Activity rows
+  - `activityCapturePersistence` to persist request/response captures when capture buffering is enabled
+  - `captureRedactHeaders` to redact sensitive headers before saving captures
+  - `activityFields` to choose which model, token, speed, and duration fields are saved for future Activity rows
+  - `loggingEnabled` to enable or fully disable UI log collection and streaming
 - Model customization
   - `ttl` to automatically unload models
   - `aliases` to use familiar model names (e.g., "gpt-4o-mini")
@@ -191,6 +240,30 @@ Almost all configuration settings are optional and can be added one step at a ti
   - `useModelName` to override model names sent to upstream servers
   - `${PORT}` automatic port variables for dynamic port assignment
   - `filters` rewrite parts of requests before sending to the upstream server
+  - `excludeFromMetrics` to keep internal or test models out of dashboard and Activity stats
+
+Supercharged persistence example:
+
+```yaml
+loggingEnabled: true
+metricsDBPath: llama-swap-metrics.db
+metricsRetentionDays: 30
+metricsQueryMaxRows: 100000
+usageMetricsPersistence: true
+activityPersistence: true
+activityCapturePersistence: false
+captureRedactHeaders: true
+activityFields:
+  model: true
+  tokens: true
+  speeds: true
+  duration: true
+
+models:
+  internal-test-model:
+    excludeFromMetrics: true
+    cmd: llama-server --port ${PORT} --model /path/to/model.gguf
+```
 
 See the [configuration documentation](docs/configuration.md) for all options.
 
@@ -260,4 +333,4 @@ For Python based inference servers like vllm or tabbyAPI it is recommended to ru
 > [!NOTE]
 > ⭐️ Star this project to help others discover it!
 
-[![Star History Chart](https://api.star-history.com/svg?repos=mostlygeek/llama-swap&type=Date)](https://www.star-history.com/#mostlygeek/llama-swap&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=abdallah-ali-abdallah/llama-swap-supercharged&type=Date)](https://www.star-history.com/#abdallah-ali-abdallah/llama-swap-supercharged&Date)
