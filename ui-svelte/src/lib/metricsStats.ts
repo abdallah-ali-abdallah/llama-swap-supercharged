@@ -97,14 +97,22 @@ function validNumber(value: number): boolean {
   return Number.isFinite(value) && value >= 0;
 }
 
-function metricTime(metric: Metrics): number {
+export function metricTimestamp(metric: Metrics): number {
   const parsed = Date.parse(metric.timestamp);
   return Number.isFinite(parsed) ? parsed : metric.id;
 }
 
+export function metricsWithinWindow(metrics: Metrics[], now: number, windowMs: number): Metrics[] {
+  const start = now - windowMs;
+  return metrics.filter((metric) => {
+    const timestamp = metricTimestamp(metric);
+    return timestamp >= start && timestamp <= now;
+  });
+}
+
 function sortMetrics(metrics: Metrics[]): Metrics[] {
   return [...metrics].sort((a, b) => {
-    const timeDiff = metricTime(a) - metricTime(b);
+    const timeDiff = metricTimestamp(a) - metricTimestamp(b);
     return timeDiff !== 0 ? timeDiff : a.id - b.id;
   });
 }
@@ -219,7 +227,7 @@ function lineSeries(metrics: Metrics[], label: string, color: string, value: (me
     label,
     color,
     points: metrics.map((metric) => ({
-      x: metricTime(metric),
+      x: metricTimestamp(metric),
       y: value(metric),
     })),
   };
@@ -241,7 +249,7 @@ function baseSummary(metrics: Metrics[], inFlight: number): MetricSummary {
     duration: summarizeValues(durations),
     generatedTokens: summarizeValues(generatedTokens),
     histogram: buildHistogram(generationSpeeds),
-    latestTimestamp: ordered.length > 0 ? metricTime(ordered[ordered.length - 1]) : null,
+    latestTimestamp: ordered.length > 0 ? metricTimestamp(ordered[ordered.length - 1]) : null,
     trend: {
       generationSpeed: trend(generationSpeeds),
       duration: trend(durations),

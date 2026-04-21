@@ -5,11 +5,12 @@
   import StatCard from "../components/stats/StatCard.svelte";
   import TimeSeriesChart from "../components/stats/TimeSeriesChart.svelte";
   import TokenComposition from "../components/stats/TokenComposition.svelte";
-  import { summarizeDashboard } from "../lib/metricsStats";
+  import { metricsWithinWindow, summarizeDashboard } from "../lib/metricsStats";
   import type { ModelMetricSummary } from "../lib/metricsStats";
   import type { Metrics } from "../lib/types";
 
   const nf = new Intl.NumberFormat();
+  const REALTIME_WINDOW_MS = 3 * 60 * 1000;
   const RANGE_OPTIONS = [
     { value: "realtime", label: "Realtime" },
     { value: "5m", label: "Past 5 min" },
@@ -31,7 +32,8 @@
   let historicalTruncated = $state(false);
   let historicalError = $state("");
   let refreshTick = $state(0);
-  let displayedMetrics = $derived(selectedRange === "realtime" ? $metrics : historicalMetrics);
+  let realtimeNow = $state(Date.now());
+  let displayedMetrics = $derived(selectedRange === "realtime" ? metricsWithinWindow($metrics, realtimeNow, REALTIME_WINDOW_MS) : historicalMetrics);
   let dashboard = $derived(summarizeDashboard(displayedMetrics, selectedRange === "realtime" ? $inFlightRequests : 0));
 
   function number(value: number): string {
@@ -77,6 +79,19 @@
   function refreshHistorical(): void {
     refreshTick++;
   }
+
+  $effect(() => {
+    if (selectedRange !== "realtime") return;
+
+    realtimeNow = Date.now();
+    const interval = window.setInterval(() => {
+      realtimeNow = Date.now();
+    }, 1000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  });
 
   $effect(() => {
     const range = selectedRange;
@@ -189,7 +204,7 @@
         {:else if displayedMetrics.length === 0}
           Waiting for metrics
         {:else}
-          {nf.format(displayedMetrics.length)} completed requests{selectedRange === "realtime" ? " in memory" : ""}
+          {nf.format(displayedMetrics.length)} completed requests{selectedRange === "realtime" ? " in last 3 min" : ""}
           {historicalTruncated ? " (limited)" : ""}
         {/if}
       </div>

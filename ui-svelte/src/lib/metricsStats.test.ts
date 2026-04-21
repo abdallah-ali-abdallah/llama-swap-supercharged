@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Metrics } from "./types";
-import { buildHistogram, generationSpeed, percentile, summarizeDashboard } from "./metricsStats";
+import { buildHistogram, generationSpeed, metricsWithinWindow, percentile, summarizeDashboard } from "./metricsStats";
 
 function metric(overrides: Partial<Metrics>): Metrics {
   return {
@@ -53,6 +53,24 @@ describe("metricsStats", () => {
     const stats = summarizeDashboard([metric({ duration_ms: 1234 })]);
 
     expect(stats.series.duration[0].points[0].y).toBe(1.234);
+  });
+
+  test("filters metrics to a moving time window", () => {
+    const now = Date.parse("2026-04-20T12:03:00.000Z");
+    const windowMs = 3 * 60 * 1000;
+
+    const filtered = metricsWithinWindow(
+      [
+        metric({ id: 1, timestamp: "2026-04-20T11:59:59.999Z" }),
+        metric({ id: 2, timestamp: "2026-04-20T12:00:00.000Z" }),
+        metric({ id: 3, timestamp: "2026-04-20T12:02:59.999Z" }),
+        metric({ id: 4, timestamp: "2026-04-20T12:03:00.001Z" }),
+      ],
+      now,
+      windowMs,
+    );
+
+    expect(filtered.map((item) => item.id)).toEqual([2, 3]);
   });
 
   test("computes cache hit rate with unknown cache values", () => {
