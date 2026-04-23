@@ -32,6 +32,8 @@ export interface TokenTotals {
   newInput: number;
   cached: number;
   output: number;
+  draftGenerated: number;
+  draftAccepted: number;
   totalInput: number;
   total: number;
   cacheHitRate: number;
@@ -45,12 +47,15 @@ export interface MetricSummary {
   generationSpeed: PercentileSummary;
   duration: PercentileSummary;
   generatedTokens: PercentileSummary;
+  draftAcceptance: PercentileSummary;
+  draftEfficiency: number;
   histogram: HistogramBin[];
   latestTimestamp: number | null;
   trend: {
     generationSpeed: number | null;
     duration: number | null;
     outputTokens: number | null;
+    draftAcceptance: number | null;
   };
 }
 
@@ -70,6 +75,7 @@ export interface DashboardStats extends MetricSummary {
     generationSpeed: ChartSeries[];
     promptSpeed: ChartSeries[];
     duration: ChartSeries[];
+    draftAcceptance: ChartSeries[];
   };
 }
 
@@ -91,6 +97,7 @@ const SERIES_COLORS = {
   generationSpeed: "#73bf69",
   promptSpeed: "#b877d9",
   duration: "#ff9830",
+  draftAcceptance: "#e06c75",
 };
 
 function validNumber(value: number): boolean {
@@ -131,6 +138,12 @@ export function generationSpeed(metric: Metrics): number | null {
 
 export function promptSpeed(metric: Metrics): number | null {
   return validNumber(metric.prompt_per_second) && metric.prompt_per_second > 0 ? metric.prompt_per_second : null;
+}
+
+export function draftAcceptanceRate(metric: Metrics): number | null {
+  return metric.generated_drafts > 0 && validNumber(metric.draft_acceptance_rate)
+    ? metric.draft_acceptance_rate * 100
+    : null;
 }
 
 export function percentile(values: number[], p: number): number {
@@ -195,12 +208,16 @@ function totalsFor(metrics: Metrics[]): TokenTotals {
   const newInput = metrics.reduce((sum, metric) => sum + Math.max(0, metric.new_input_tokens || 0), 0);
   const cached = metrics.reduce((sum, metric) => sum + Math.max(0, metric.cache_tokens || 0), 0);
   const output = metrics.reduce((sum, metric) => sum + Math.max(0, metric.output_tokens || 0), 0);
+  const draftGenerated = metrics.reduce((sum, metric) => sum + Math.max(0, metric.generated_drafts || 0), 0);
+  const draftAccepted = metrics.reduce((sum, metric) => sum + Math.max(0, metric.accepted_drafts || 0), 0);
   const totalInput = newInput + cached;
 
   return {
     newInput,
     cached,
     output,
+    draftGenerated,
+    draftAccepted,
     totalInput,
     total: totalInput + output,
     cacheHitRate: totalInput > 0 ? cached / totalInput : 0,
@@ -239,21 +256,33 @@ function baseSummary(metrics: Metrics[], inFlight: number): MetricSummary {
   const promptSpeeds = ordered.map(promptSpeed).filter((value): value is number => value !== null);
   const durations = ordered.map((metric) => metric.duration_ms).filter((value) => validNumber(value) && value > 0);
   const generatedTokens = ordered.map((metric) => metric.output_tokens).filter((value) => validNumber(value) && value > 0);
+  const draftAcceptances = ordered
+    .map(draftAcceptanceRate)
+    .filter((value): value is number => value !== null);
+  const tokenTotals = totalsFor(ordered);
+
+  // Draft efficiency: overall ratio of accepted to generated drafts
+  const draftEfficiency = tokenTotals.draftGenerated > 0
+    ? tokenTotals.draftAccepted / tokenTotals.draftGenerated
+    : 0;
 
   return {
     requests: ordered.length,
     inFlight,
-    tokens: totalsFor(ordered),
+    tokens: tokenTotals,
     promptSpeed: summarizeValues(promptSpeeds),
     generationSpeed: summarizeValues(generationSpeeds),
     duration: summarizeValues(durations),
     generatedTokens: summarizeValues(generatedTokens),
+    draftAcceptance: summarizeValues(draftAcceptances),
+    draftEfficiency,
     histogram: buildHistogram(generationSpeeds),
     latestTimestamp: ordered.length > 0 ? metricTimestamp(ordered[ordered.length - 1]) : null,
     trend: {
       generationSpeed: trend(generationSpeeds),
       duration: trend(durations),
       outputTokens: trend(generatedTokens),
+      draftAcceptance: trend(draftAcceptances),
     },
   };
 }
@@ -296,6 +325,7 @@ function globalSeries(metrics: Metrics[]): DashboardStats["series"] {
     generationSpeed: [lineSeries(metrics, "Generated tok/sec", SERIES_COLORS.generationSpeed, generationSpeed)],
     promptSpeed: [lineSeries(metrics, "Prompt tok/sec", SERIES_COLORS.promptSpeed, promptSpeed)],
     duration: [lineSeries(metrics, "Duration", SERIES_COLORS.duration, (metric) => (metric.duration_ms > 0 ? metric.duration_ms / 1000 : null))],
+    draftAcceptance: [lineSeries(metrics, "Draft acceptance %", SERIES_COLORS.draftAcceptance, draftAcceptanceRate)],
   };
 }
 

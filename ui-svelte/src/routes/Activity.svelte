@@ -5,6 +5,7 @@
   import CaptureDialog from "../components/CaptureDialog.svelte";
   import type { Metrics, ReqRespCapture } from "../lib/types";
 
+  const nf = new Intl.NumberFormat();
   const RANGE_OPTIONS = [
     { value: "realtime", label: "Realtime" },
     { value: "5m", label: "Past 5 minutes" },
@@ -234,6 +235,8 @@
             <th class="px-6 py-3">Prompt Processing</th>
             <th class="px-6 py-3">Generation Speed</th>
             <th class="px-6 py-3">Duration</th>
+            <th class="px-6 py-3">Draft Rate</th>
+            <th class="px-6 py-3">Drafted Tokens</th>
             <th class="px-6 py-3">Capture</th>
           </tr>
         </thead>
@@ -249,6 +252,22 @@
               <td class="px-6 py-4">{formatSpeed(metric.prompt_per_second)}</td>
               <td class="px-6 py-4">{formatSpeed(metric.tokens_per_second)}</td>
               <td class="px-6 py-4">{formatDuration(metric.duration_ms)}</td>
+              <td class="px-6 py-4">
+                {#if metric.generated_drafts > 0}
+                  <span class="font-medium">{(metric.draft_acceptance_rate * 100).toFixed(1)}%</span>
+                  <span class="text-txtsecondary text-xs">{metric.accepted_drafts}/{metric.generated_drafts}</span>
+                {:else}
+                  <span class="text-txtsecondary">-</span>
+                {/if}
+              </td>
+              <td class="px-6 py-4">
+                {#if metric.generated_drafts > 0}
+                  <span class="font-medium">{nf.format(metric.generated_drafts)}</span>
+                  <span class="text-txtsecondary text-xs">({nf.format(metric.accepted_drafts)} accepted)</span>
+                {:else}
+                  <span class="text-txtsecondary">-</span>
+                {/if}
+              </td>
               <td class="px-6 py-4">
                 {#if metric.has_capture}
                   <button

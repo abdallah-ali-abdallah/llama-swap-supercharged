@@ -14,6 +14,9 @@ function metric(overrides: Partial<Metrics>): Metrics {
     tokens_per_second: -1,
     duration_ms: 0,
     has_capture: false,
+    draft_acceptance_rate: 0,
+    accepted_drafts: 0,
+    generated_drafts: 0,
     ...overrides,
   };
 }
@@ -53,6 +56,19 @@ describe("metricsStats", () => {
     const stats = summarizeDashboard([metric({ duration_ms: 1234 })]);
 
     expect(stats.series.duration[0].points[0].y).toBe(1.234);
+  });
+
+  test("keeps zero draft acceptance samples in summaries and charts", () => {
+    const stats = summarizeDashboard([
+      metric({ id: 1, generated_drafts: 4, accepted_drafts: 0, draft_acceptance_rate: 0 }),
+      metric({ id: 2, generated_drafts: 6, accepted_drafts: 3, draft_acceptance_rate: 0.5 }),
+    ]);
+
+    expect(stats.tokens.draftGenerated).toBe(10);
+    expect(stats.tokens.draftAccepted).toBe(3);
+    expect(stats.draftEfficiency).toBeCloseTo(0.3);
+    expect(stats.draftAcceptance.count).toBe(2);
+    expect(stats.series.draftAcceptance[0].points.map((point) => point.y)).toEqual([0, 50]);
   });
 
   test("filters metrics to a moving time window", () => {

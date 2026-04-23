@@ -73,6 +73,11 @@ type TokenMetrics struct {
 	TokensPerSecond float64   `json:"tokens_per_second"`
 	DurationMs      int       `json:"duration_ms"`
 	HasCapture      bool      `json:"has_capture"`
+
+	// Speculative decoding stats (0 = not using spec decode)
+	DraftAcceptanceRate float64 `json:"draft_acceptance_rate"`
+	AcceptedDrafts      int     `json:"accepted_drafts"`
+	GeneratedDrafts     int     `json:"generated_drafts"`
 }
 
 type ReqRespCapture struct {
@@ -108,11 +113,17 @@ type metricsMonitor struct {
 	captureOrder   []int          // track insertion order for FIFO eviction
 	captureSize    int            // current total compressed size in bytes
 	maxCaptureSize int            // max bytes for captures (uncompressed)
+
+	// spec decode parser for tracking draft acceptance rates from upstream llama-server logs
+	specParser     *specDecodeParser
+	specParserStop func()
 }
 
 // newMetricsMonitor creates a new metricsMonitor. captureBufferMB is the
 // capture buffer size in megabytes; 0 disables captures.
-func newMetricsMonitor(logger *LogMonitor, maxMetrics int, captureBufferMB int, stores ...*metricsStore) *metricsMonitor {
+// upstreamLogger is the optional upstream logger that captures llama-server stdout,
+// used for parsing speculative decoding stats (draft acceptance rate lines).
+func newMetricsMonitor(logger *LogMonitor, maxMetrics int, captureBufferMB int, upstreamLogger *LogMonitor, stores ...*metricsStore) *metricsMonitor {
 	var store *metricsStore
 	if len(stores) > 0 {
 		store = stores[0]
@@ -129,6 +140,21 @@ func newMetricsMonitor(logger *LogMonitor, maxMetrics int, captureBufferMB int, 
 		maxCaptureSize: captureBufferMB * 1024 * 1024,
 	}
 
+	// Start spec decode parser to track draft acceptance rates from upstream llama-server logs.
+	// The upstream logger captures the llama-server stdout which includes "draft acceptance rate" lines.
+	// If no upstream logger is provided, fall back to the proxy logger (for tests).
+	var eventBus *event.Dispatcher
+	if upstreamLogger != nil {
+		eventBus = upstreamLogger.eventbus
+	} else {
+		eventBus = logger.eventbus
+	}
+	mp.specParser = newSpecDecodeParser(logger)
+	mp.specParserStop = event.Subscribe(eventBus, func(e LogDataEvent) {
+		mp.specParser.parseChunk(e.Data)
+	})
+
+	// Load persisted metrics if store is available
 	if store != nil {
 		if metrics, err := store.latest(maxMetrics); err != nil {
 			if logger != nil {
@@ -173,7 +199,34 @@ func (mp *metricsMonitor) addMetrics(metric TokenMetrics) int {
 	return metric.ID
 }
 
+func (mp *metricsMonitor) enrichWithDraftStats(metric *TokenMetrics) {
+	if mp.specParser == nil || metric.GeneratedDrafts > 0 {
+		return
+	}
+
+	requestEnd := metric.Timestamp
+	if requestEnd.IsZero() {
+		requestEnd = time.Now()
+		metric.Timestamp = requestEnd
+	}
+
+	stats, ok := mp.specParser.consumeClosestTo(requestEnd, specDecodeWaitTimeout)
+	if !ok {
+		return
+	}
+
+	metric.DraftAcceptanceRate = stats.AcceptanceRate
+	metric.AcceptedDrafts = stats.AcceptedDrafts
+	metric.GeneratedDrafts = stats.GeneratedDrafts
+}
+
 func (mp *metricsMonitor) close() {
+	// Stop spec decode parser
+	if mp.specParserStop != nil {
+		mp.specParserStop()
+		mp.specParserStop = nil
+	}
+
 	mp.mu.RLock()
 	store := mp.store
 	mp.mu.RUnlock()
@@ -588,49 +641,47 @@ func (mp *metricsMonitor) wrapHandler(
 	body := recorder.body.Bytes()
 	if len(body) == 0 {
 		mp.logger.Warn("metrics: empty body, recording minimal metrics")
-		mp.addMetrics(tm)
-		return nil
-	}
-
-	// Decompress if needed
-	if encoding := recorder.Header().Get("Content-Encoding"); encoding != "" {
-		var err error
-		body, err = decompressBody(body, encoding)
-		if err != nil {
-			mp.logger.Warnf("metrics: decompression failed: %v, path=%s, recording minimal metrics", err, request.URL.Path)
-			mp.addMetrics(tm)
-			return nil
-		}
-	}
-	if strings.Contains(recorder.Header().Get("Content-Type"), "text/event-stream") {
-		if parsed, err := processStreamingResponse(modelID, recorder.StartTime(), body); err != nil {
-			mp.logger.Warnf("error processing streaming response: %v, path=%s, recording minimal metrics", err, request.URL.Path)
-		} else {
-			tm = parsed
-		}
 	} else {
-		if gjson.ValidBytes(body) {
-			parsed := gjson.ParseBytes(body)
-			usage := parsed.Get("usage")
-			timings := parsed.Get("timings")
-
-			// extract timings for infill - response is an array, timings are in the last element
-			// see #463
-			if strings.HasPrefix(request.URL.Path, "/infill") {
-				if arr := parsed.Array(); len(arr) > 0 {
-					timings = arr[len(arr)-1].Get("timings")
-				}
+		// Decompress if needed
+		if encoding := recorder.Header().Get("Content-Encoding"); encoding != "" {
+			var err error
+			body, err = decompressBody(body, encoding)
+			if err != nil {
+				mp.logger.Warnf("metrics: decompression failed: %v, path=%s, recording minimal metrics", err, request.URL.Path)
+				body = nil
 			}
+		}
 
-			if usage.Exists() || timings.Exists() {
-				if parsedMetrics, err := parseMetrics(modelID, recorder.StartTime(), usage, timings); err != nil {
-					mp.logger.Warnf("error parsing metrics: %v, path=%s, recording minimal metrics", err, request.URL.Path)
-				} else {
-					tm = parsedMetrics
-				}
+		if len(body) > 0 && strings.Contains(recorder.Header().Get("Content-Type"), "text/event-stream") {
+			if parsed, err := processStreamingResponse(modelID, recorder.StartTime(), body); err != nil {
+				mp.logger.Warnf("error processing streaming response: %v, path=%s, recording minimal metrics", err, request.URL.Path)
+			} else {
+				tm = parsed
 			}
-		} else {
-			mp.logger.Warnf("metrics: invalid JSON in response body path=%s, recording minimal metrics", request.URL.Path)
+		} else if len(body) > 0 {
+			if gjson.ValidBytes(body) {
+				parsed := gjson.ParseBytes(body)
+				usage := parsed.Get("usage")
+				timings := parsed.Get("timings")
+
+				// extract timings for infill - response is an array, timings are in the last element
+				// see #463
+				if strings.HasPrefix(request.URL.Path, "/infill") {
+					if arr := parsed.Array(); len(arr) > 0 {
+						timings = arr[len(arr)-1].Get("timings")
+					}
+				}
+
+				if usage.Exists() || timings.Exists() {
+					if parsedMetrics, err := parseMetrics(modelID, recorder.StartTime(), usage, timings); err != nil {
+						mp.logger.Warnf("error parsing metrics: %v, path=%s, recording minimal metrics", err, request.URL.Path)
+					} else {
+						tm = parsedMetrics
+					}
+				}
+			} else {
+				mp.logger.Warnf("metrics: invalid JSON in response body path=%s, recording minimal metrics", request.URL.Path)
+			}
 		}
 	}
 
@@ -660,6 +711,7 @@ func (mp *metricsMonitor) wrapHandler(
 		}
 	}
 
+	mp.enrichWithDraftStats(&tm)
 	metricID := mp.addMetrics(tm)
 
 	// Store capture if enabled
@@ -750,6 +802,8 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 	tokensPerSecond := -1.0
 	promptPerSecond := -1.0
 	durationMs := wallDurationMs
+	generatedDrafts := 0
+	acceptedDrafts := 0
 
 	if usage.Exists() {
 		if ct := usage.Get("completion_tokens"); ct.Exists() {
@@ -784,6 +838,8 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 		outputTokens = int(timings.Get("predicted_n").Int())
 		promptPerSecond = timings.Get("prompt_per_second").Float()
 		tokensPerSecond = timings.Get("predicted_per_second").Float()
+		generatedDrafts = int(timings.Get("draft_n").Int())
+		acceptedDrafts = int(timings.Get("draft_n_accepted").Int())
 		timingsDurationMs := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float())
 		if timingsDurationMs > durationMs {
 			durationMs = timingsDurationMs
@@ -795,6 +851,7 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 				cachedTokens = int(cn.Int())
 			}
 		}
+
 	} else {
 		// No timings — try usage as final fallback
 		if details := usage.Get("prompt_tokens_details"); details.Exists() && details.IsObject() {
@@ -806,7 +863,7 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 		}
 	}
 
-	return TokenMetrics{
+	result := TokenMetrics{
 		Timestamp:      time.Now(),
 		Model:          modelID,
 		CachedTokens:   cachedTokens,
@@ -816,7 +873,14 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 		PromptPerSecond: promptPerSecond,
 		TokensPerSecond: tokensPerSecond,
 		DurationMs:      durationMs,
-	}, nil
+	}
+	if generatedDrafts > 0 {
+		result.GeneratedDrafts = generatedDrafts
+		result.AcceptedDrafts = acceptedDrafts
+		result.DraftAcceptanceRate = float64(acceptedDrafts) / float64(generatedDrafts)
+	}
+
+	return result, nil
 }
 
 // decompressBody decompresses the body based on Content-Encoding header

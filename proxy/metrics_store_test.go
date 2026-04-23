@@ -62,6 +62,34 @@ func TestMetricsStore_PersistsAndQueriesRanges(t *testing.T) {
 	require.Equal(t, []int{0, 1}, []int{limited[0].ID, limited[1].ID})
 }
 
+func TestMetricsStore_PersistsSpecDecodeFields(t *testing.T) {
+	logger := NewLogMonitorWriter(io.Discard)
+	path := filepath.Join(t.TempDir(), "metrics.db")
+	store, err := newMetricsStore(path, 30, 100, logger)
+	require.NoError(t, err)
+	defer store.close()
+
+	now := time.Now().Truncate(time.Millisecond)
+	require.NoError(t, store.insert(TokenMetrics{
+		ID:                  9,
+		Timestamp:           now,
+		Model:               "model-a",
+		NewInputTokens:      10,
+		OutputTokens:        5,
+		DraftAcceptanceRate: 0.7,
+		AcceptedDrafts:      7,
+		GeneratedDrafts:     10,
+	}))
+
+	metrics, truncated, err := store.query(metricsQuery{Limit: 10})
+	require.NoError(t, err)
+	require.False(t, truncated)
+	require.Len(t, metrics, 1)
+	require.Equal(t, 0.7, metrics[0].DraftAcceptanceRate)
+	require.Equal(t, 7, metrics[0].AcceptedDrafts)
+	require.Equal(t, 10, metrics[0].GeneratedDrafts)
+}
+
 func TestMetricsStore_AppliesRetention(t *testing.T) {
 	logger := NewLogMonitorWriter(io.Discard)
 	path := filepath.Join(t.TempDir(), "metrics.db")
@@ -334,7 +362,7 @@ func TestMetricsMonitor_SwitchesPersistenceStore(t *testing.T) {
 	secondPath := filepath.Join(dir, "second.db")
 	store, err := newMetricsStoreWithOptions(firstPath, 30, 100, true, true, false, allActivityFields(), logger)
 	require.NoError(t, err)
-	monitor := newMetricsMonitor(logger, 10, 0, store)
+	monitor := newMetricsMonitor(logger, 10, 0, nil, store)
 	defer monitor.close()
 
 	monitor.addMetrics(TokenMetrics{Timestamp: time.Now(), Model: "first", NewInputTokens: 1})
@@ -480,7 +508,7 @@ func TestMetricsMonitor_RestoresPersistedMetrics(t *testing.T) {
 	store, err := newMetricsStore(path, 30, 100, logger)
 	require.NoError(t, err)
 
-	monitor := newMetricsMonitor(logger, 10, 0, store)
+	monitor := newMetricsMonitor(logger, 10, 0, nil, store)
 	require.Equal(t, 0, monitor.addMetrics(TokenMetrics{
 		Timestamp:       time.Now(),
 		Model:           "model-a",
@@ -499,7 +527,7 @@ func TestMetricsMonitor_RestoresPersistedMetrics(t *testing.T) {
 
 	store, err = newMetricsStore(path, 30, 100, logger)
 	require.NoError(t, err)
-	monitor = newMetricsMonitor(logger, 10, 0, store)
+	monitor = newMetricsMonitor(logger, 10, 0, nil, store)
 	defer monitor.close()
 
 	restored := monitor.getMetrics()
@@ -520,7 +548,7 @@ func TestMetricsMonitor_RestoresPersistedCapture(t *testing.T) {
 	store, err := newMetricsStoreWithOptions(path, 30, 100, true, true, true, allActivityFields(), logger)
 	require.NoError(t, err)
 
-	monitor := newMetricsMonitor(logger, 10, 5, store)
+	monitor := newMetricsMonitor(logger, 10, 5, nil, store)
 	metricID := monitor.addMetrics(TokenMetrics{
 		Timestamp:  time.Now(),
 		Model:      "model-a",
@@ -538,7 +566,7 @@ func TestMetricsMonitor_RestoresPersistedCapture(t *testing.T) {
 
 	store, err = newMetricsStoreWithOptions(path, 30, 100, true, true, true, allActivityFields(), logger)
 	require.NoError(t, err)
-	monitor = newMetricsMonitor(logger, 10, 5, store)
+	monitor = newMetricsMonitor(logger, 10, 5, nil, store)
 	defer monitor.close()
 
 	restored := monitor.getMetrics()
@@ -561,7 +589,7 @@ func TestMetricsMonitor_RangeIncludesMemoryCaptureAvailability(t *testing.T) {
 	store, err := newMetricsStoreWithOptions(path, 30, 100, true, true, false, allActivityFields(), logger)
 	require.NoError(t, err)
 
-	monitor := newMetricsMonitor(logger, 10, 5, store)
+	monitor := newMetricsMonitor(logger, 10, 5, nil, store)
 	metricID := monitor.addMetrics(TokenMetrics{
 		Timestamp:  time.Now(),
 		Model:      "model-a",
@@ -578,7 +606,7 @@ func TestMetricsMonitor_RangeIncludesMemoryCaptureAvailability(t *testing.T) {
 
 	store, err = newMetricsStoreWithOptions(path, 30, 100, true, true, false, allActivityFields(), logger)
 	require.NoError(t, err)
-	monitor = newMetricsMonitor(logger, 10, 5, store)
+	monitor = newMetricsMonitor(logger, 10, 5, nil, store)
 	defer monitor.close()
 
 	metrics, truncated, err = monitor.getMetricsForRange(metricsQuery{Limit: 10})

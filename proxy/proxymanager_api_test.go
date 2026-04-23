@@ -213,7 +213,7 @@ func TestProxyManager_PersistenceSettingsAPI(t *testing.T) {
 	logger := NewLogMonitorWriter(io.Discard)
 	store, err := newMetricsStoreWithOptions(filepath.Join(t.TempDir(), "metrics.db"), 14, 100, true, true, false, allActivityFields(), logger)
 	require.NoError(t, err)
-	monitor := newMetricsMonitor(logger, 10, 0, store)
+	monitor := newMetricsMonitor(logger, 10, 0, nil, store)
 	defer monitor.close()
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -354,14 +354,14 @@ func newExcludeMetricsAPIProxyManagerWithStore(t *testing.T) *ProxyManager {
 	store, err := newMetricsStore(filepath.Join(t.TempDir(), "metrics.db"), 30, 100, logger)
 	require.NoError(t, err)
 	t.Cleanup(store.close)
-	return newExcludeMetricsAPIProxyManager(t, newMetricsMonitor(logger, 100, 0, store))
+	return newExcludeMetricsAPIProxyManager(t, newMetricsMonitor(logger, 100, 0, nil, store))
 }
 
 func newExcludeMetricsAPIProxyManager(t *testing.T, monitor *metricsMonitor) *ProxyManager {
 	t.Helper()
 	logger := NewLogMonitorWriter(io.Discard)
 	if monitor == nil {
-		monitor = newMetricsMonitor(logger, 100, 0)
+		monitor = newMetricsMonitor(logger, 100, 0, nil)
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	t.Cleanup(shutdownCancel)

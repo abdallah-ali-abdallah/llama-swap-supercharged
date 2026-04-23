@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -173,7 +174,10 @@ func (s *metricsStore) init() error {
 			prompt_per_second REAL NOT NULL,
 			tokens_per_second REAL NOT NULL,
 			duration_ms INTEGER NOT NULL,
-			has_capture INTEGER NOT NULL
+			has_capture INTEGER NOT NULL,
+			draft_acceptance_rate REAL NOT NULL DEFAULT 0,
+			accepted_drafts INTEGER NOT NULL DEFAULT 0,
+			generated_drafts INTEGER NOT NULL DEFAULT 0
 		);`,
 		`CREATE TABLE IF NOT EXISTS activity_metrics (
 			id INTEGER PRIMARY KEY,
@@ -185,7 +189,10 @@ func (s *metricsStore) init() error {
 			prompt_per_second REAL NOT NULL,
 			tokens_per_second REAL NOT NULL,
 			duration_ms INTEGER NOT NULL,
-			has_capture INTEGER NOT NULL
+			has_capture INTEGER NOT NULL,
+			draft_acceptance_rate REAL NOT NULL DEFAULT 0,
+			accepted_drafts INTEGER NOT NULL DEFAULT 0,
+			generated_drafts INTEGER NOT NULL DEFAULT 0
 		);`,
 		`CREATE TABLE IF NOT EXISTS activity_request_captures (
 			id INTEGER PRIMARY KEY,
@@ -209,7 +216,37 @@ func (s *metricsStore) init() error {
 			return fmt.Errorf("initialize metrics database: %w", err)
 		}
 	}
+
+	// Add spec decode columns to existing tables (migration for pre-existing DBs)
+	if err := s.addSpecDecodeColumns(); err != nil {
+		return err
+	}
+
 	return s.migrateLegacyMetrics()
+}
+
+func (s *metricsStore) addSpecDecodeColumns() error {
+	// Add draft acceptance rate columns if they don't exist yet
+	// (for pre-existing databases that were created before this feature)
+	commands := []string{
+		`ALTER TABLE token_metrics ADD COLUMN draft_acceptance_rate REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE token_metrics ADD COLUMN accepted_drafts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE token_metrics ADD COLUMN generated_drafts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_metrics ADD COLUMN draft_acceptance_rate REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_metrics ADD COLUMN accepted_drafts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_metrics ADD COLUMN generated_drafts INTEGER NOT NULL DEFAULT 0`,
+	}
+
+	for _, cmd := range commands {
+		if _, err := s.db.Exec(cmd); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("add speculative decoding columns: %w", err)
+		}
+	}
+	return nil
+}
+
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 func (s *metricsStore) migrateLegacyMetrics() error {
@@ -274,8 +311,9 @@ func (s *metricsStore) insertIntoTable(table string, metric TokenMetrics) error 
 	_, err := s.db.Exec(
 		fmt.Sprintf(`INSERT OR REPLACE INTO %s (
 			id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms, has_capture
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, table),
+			prompt_per_second, tokens_per_second, duration_ms, has_capture,
+			draft_acceptance_rate, accepted_drafts, generated_drafts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, table),
 		metric.ID,
 		metric.Timestamp.UnixMilli(),
 		metric.Model,
@@ -286,6 +324,9 @@ func (s *metricsStore) insertIntoTable(table string, metric TokenMetrics) error 
 		metric.TokensPerSecond,
 		metric.DurationMs,
 		boolToInt(metric.HasCapture),
+		metric.DraftAcceptanceRate,
+		metric.AcceptedDrafts,
+		metric.GeneratedDrafts,
 	)
 	if err != nil {
 		return fmt.Errorf("insert %s: %w", table, err)
@@ -360,7 +401,8 @@ func (s *metricsStore) latest(limit int) ([]TokenMetrics, error) {
 	rows, err := s.db.Query(`SELECT
 			token_metrics.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms,
-			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = token_metrics.id)
+			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = token_metrics.id),
+			token_metrics.draft_acceptance_rate, token_metrics.accepted_drafts, token_metrics.generated_drafts
 		FROM token_metrics
 		ORDER BY token_metrics.id DESC
 		LIMIT ?`, limit)
@@ -395,8 +437,9 @@ func (s *metricsStore) query(q metricsQuery) ([]TokenMetrics, bool, error) {
 	query := fmt.Sprintf(`SELECT
 			%s.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms,
-			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = %s.id)
-		FROM %s`, table, table, table)
+			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = %s.id),
+			%s.draft_acceptance_rate, %s.accepted_drafts, %s.generated_drafts
+		FROM %s`, table, table, table, table, table, table)
 	args := []any{}
 
 	if q.From != nil || q.To != nil {
@@ -781,6 +824,9 @@ func scanTokenMetrics(rows *sql.Rows) ([]TokenMetrics, error) {
 			&metric.TokensPerSecond,
 			&metric.DurationMs,
 			&hasCapture,
+			&metric.DraftAcceptanceRate,
+			&metric.AcceptedDrafts,
+			&metric.GeneratedDrafts,
 		); err != nil {
 			return nil, fmt.Errorf("scan metrics: %w", err)
 		}

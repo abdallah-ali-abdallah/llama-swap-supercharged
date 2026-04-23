@@ -57,6 +57,9 @@ export interface Metrics {
   tokens_per_second: number;
   duration_ms: number;
   has_capture: boolean;
+  draft_acceptance_rate: number;
+  accepted_drafts: number;
+  generated_drafts: number;
 }
 
 export interface ReqRespCapture {

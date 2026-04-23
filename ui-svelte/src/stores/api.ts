@@ -22,10 +22,21 @@ let apiEventSource: EventSource | null = null;
 
 export function mergeRealtimeMetrics(newMetrics: Metrics[], prevMetrics: Metrics[], now = Date.now()): Metrics[] {
   const cutoff = now - REALTIME_METRICS_MAX_AGE_MS;
-  return [...newMetrics, ...prevMetrics]
-    .filter((metric) => {
-      const timestamp = Date.parse(metric.timestamp);
-      return Number.isNaN(timestamp) || timestamp >= cutoff;
+  const merged = new Map<number, Metrics>();
+  for (const metric of [...newMetrics, ...prevMetrics]) {
+    const timestamp = Date.parse(metric.timestamp);
+    if (!Number.isNaN(timestamp) && timestamp < cutoff) {
+      continue;
+    }
+    if (!merged.has(metric.id)) {
+      merged.set(metric.id, metric);
+    }
+  }
+
+  return [...merged.values()]
+    .sort((a, b) => {
+      const timeDiff = Date.parse(b.timestamp) - Date.parse(a.timestamp);
+      return Number.isFinite(timeDiff) && timeDiff !== 0 ? timeDiff : b.id - a.id;
     })
     .slice(0, REALTIME_METRICS_LIMIT);
 }

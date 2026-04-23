@@ -14,6 +14,9 @@ function metric(overrides: Partial<Metrics>): Metrics {
     tokens_per_second: -1,
     duration_ms: 0,
     has_capture: false,
+    draft_acceptance_rate: 0,
+    accepted_drafts: 0,
+    generated_drafts: 0,
     ...overrides,
   };
 }
@@ -30,7 +33,7 @@ describe("api realtime metrics", () => {
       now,
     );
 
-    expect(merged.map((item) => item.id)).toEqual([1, 3]);
+    expect(merged.map((item) => item.id)).toEqual([3, 1]);
   });
 
   test("keeps only the newest realtime metrics when over the limit", () => {
@@ -48,6 +51,21 @@ describe("api realtime metrics", () => {
     expect(merged).toHaveLength(REALTIME_METRICS_LIMIT);
     expect(merged[0].id).toBe(total);
     expect(merged[REALTIME_METRICS_LIMIT - 1].id).toBe(6);
+  });
+
+  test("deduplicates updated metrics by id", () => {
+    const now = Date.parse("2026-04-20T12:10:00.000Z");
+
+    const merged = mergeRealtimeMetrics(
+      [metric({ id: 7, timestamp: new Date(now).toISOString(), generated_drafts: 10, accepted_drafts: 8, draft_acceptance_rate: 0.8 })],
+      [metric({ id: 7, timestamp: new Date(now).toISOString(), generated_drafts: 0, accepted_drafts: 0, draft_acceptance_rate: 0 })],
+      now,
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].generated_drafts).toBe(10);
+    expect(merged[0].accepted_drafts).toBe(8);
+    expect(merged[0].draft_acceptance_rate).toBe(0.8);
   });
 });
 

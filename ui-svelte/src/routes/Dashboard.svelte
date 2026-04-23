@@ -144,43 +144,49 @@
 </script>
 
 <div class="mx-auto flex max-w-[1800px] flex-col gap-5 p-2">
-  <header class="flex flex-wrap items-end justify-between gap-4">
-    <div>
+  <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+    <div class="min-w-0">
       <h1 class="p-0 text-2xl font-bold">Dashboard</h1>
       <p class="mt-1 text-sm text-txtsecondary">
-        Real-time token consumption, cache efficiency, and generation performance.
+        Real-time token consumption, cache efficiency, generation performance, and speculative decoding health.
       </p>
     </div>
-    <div class="flex flex-col items-end gap-2">
-      <div class="flex flex-wrap items-center justify-end gap-2">
-        {#each RANGE_OPTIONS as option (option.value)}
-          <button
-            type="button"
-            onclick={() => (selectedRange = option.value)}
-            class={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
-              selectedRange === option.value
-                ? "border-[#5794f2] bg-[#5794f2]/20 text-[#174a8b] dark:text-[#cfe2ff]"
-                : "border-card-border bg-surface text-txtsecondary hover:border-card-border-inner hover:text-txtmain"
-            }`}
-          >
-            {option.label}
-          </button>
-        {/each}
-        {#if selectedRange !== "realtime"}
-          <button
-            type="button"
-            onclick={refreshHistorical}
-            disabled={historicalLoading}
-            title="Refresh metrics"
-            class="inline-flex items-center gap-2 rounded-md border border-card-border bg-surface px-3 py-2 text-sm font-semibold text-txtsecondary transition hover:border-card-border-inner hover:text-txtmain disabled:opacity-60"
-          >
-            <RefreshCw size={15} class={historicalLoading ? "animate-spin" : ""} />
-            Refresh
-          </button>
-        {/if}
+    <div class="flex min-w-0 flex-col gap-2 xl:items-end">
+      <div class="flex min-w-0 flex-col gap-2 xl:items-end">
+        <div class="flex min-w-0 items-center gap-2 xl:flex-nowrap">
+          <div class="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1 xl:justify-end xl:pb-0">
+            {#each RANGE_OPTIONS as option (option.value)}
+              <button
+                type="button"
+                onclick={() => (selectedRange = option.value)}
+                class={`shrink-0 whitespace-nowrap rounded-md border px-3 py-2 text-sm font-semibold transition ${
+                  selectedRange === option.value
+                    ? "border-[#5794f2] bg-[#5794f2]/20 text-[#174a8b] dark:text-[#cfe2ff]"
+                    : "border-card-border bg-surface text-txtsecondary hover:border-card-border-inner hover:text-txtmain"
+                }`}
+              >
+                {option.label}
+              </button>
+            {/each}
+          </div>
+          <div class="flex h-10 w-[108px] shrink-0 justify-end">
+            {#if selectedRange !== "realtime"}
+              <button
+                type="button"
+                onclick={refreshHistorical}
+                disabled={historicalLoading}
+                title="Refresh metrics"
+                class="inline-flex items-center gap-2 rounded-md border border-card-border bg-surface px-3 py-2 text-sm font-semibold text-txtsecondary transition hover:border-card-border-inner hover:text-txtmain disabled:opacity-60"
+              >
+                <RefreshCw size={15} class={historicalLoading ? "animate-spin" : ""} />
+                Refresh
+              </button>
+            {/if}
+          </div>
+        </div>
       </div>
       {#if selectedRange === "custom"}
-        <div class="flex flex-wrap items-center justify-end gap-2 text-sm text-txtsecondary">
+        <div class="flex flex-wrap items-center gap-2 text-sm text-txtsecondary xl:justify-end">
           <input
             type="datetime-local"
             bind:value={customFrom}
@@ -196,7 +202,7 @@
           />
         </div>
       {/if}
-      <div class="rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-txtsecondary">
+      <div class="rounded-md border border-card-border bg-surface px-3 py-2 text-sm text-txtsecondary xl:self-end">
         {#if historicalLoading}
           Loading metrics
         {:else if historicalError}
@@ -211,7 +217,7 @@
     </div>
   </header>
 
-  <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+  <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
     <StatCard
       title="Total Tokens"
       value={number(dashboard.tokens.total)}
@@ -243,6 +249,14 @@
       subtext={`P95 ${duration(dashboard.duration.p95)} · P99 ${duration(dashboard.duration.p99)}`}
       tone="orange"
     />
+    <StatCard
+      title="Draft Tokens"
+      value={number(dashboard.tokens.draftGenerated)}
+      subtext={dashboard.tokens.draftGenerated > 0
+        ? `${number(dashboard.tokens.draftAccepted)} accepted · ${decimal(dashboard.draftEfficiency * 100)}% overall acceptance`
+        : "No speculative decoding samples in range"}
+      tone="neutral"
+    />
   </section>
 
   <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -250,6 +264,46 @@
     <TimeSeriesChart title="Generation Speed" series={dashboard.series.generationSpeed} unit="tok/s" curve="smooth" smoothSamples />
     <TimeSeriesChart title="Prompt Processing Speed" series={dashboard.series.promptSpeed} unit="tok/s" curve="smooth" smoothSamples />
     <TimeSeriesChart title="Request Duration" series={dashboard.series.duration} unit="s" valueFractionDigits={3} curve="smooth" smoothSamples />
+  </section>
+
+  <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+    <TimeSeriesChart
+      title="Draft Acceptance Rate"
+      series={dashboard.series.draftAcceptance}
+      unit="%"
+      valueFractionDigits={1}
+      curve="smooth"
+      smoothSamples
+    />
+    <div class="rounded-lg border border-card-border bg-surface p-4 shadow-sm">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h2 class="p-0 text-xs font-semibold uppercase tracking-wider text-txtsecondary">Speculative Decoding</h2>
+          <p class="mt-2 text-sm text-txtsecondary">
+            {#if dashboard.tokens.draftGenerated > 0}
+              {number(dashboard.tokens.draftGenerated)} drafted tokens with {number(dashboard.tokens.draftAccepted)} accepted across {number(dashboard.draftAcceptance.count)} requests.
+            {:else}
+              No speculative decoding samples in the selected time range.
+            {/if}
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <StatCard
+          title="Acceptance P50"
+          value={`${decimal(dashboard.draftAcceptance.p50)}%`}
+          subtext={`P95 ${decimal(dashboard.draftAcceptance.p95)}% · Max ${decimal(dashboard.draftAcceptance.max)}%`}
+          tone="green"
+        />
+        <StatCard
+          title="Rejected Drafts"
+          value={number(Math.max(0, dashboard.tokens.draftGenerated - dashboard.tokens.draftAccepted))}
+          subtext={`${decimal(dashboard.draftEfficiency * 100)}% accepted overall`}
+          tone="yellow"
+        />
+      </div>
+    </div>
   </section>
 
   <section class="grid grid-cols-1 gap-4 xl:grid-cols-2">

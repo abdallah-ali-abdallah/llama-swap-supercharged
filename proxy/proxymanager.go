@@ -283,7 +283,7 @@ func New(proxyConfig config.Config) *ProxyManager {
 		muxLogger:      muxLogger,
 		upstreamLogger: upstreamLogger,
 
-		metricsMonitor: newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer, metricsStore),
+		metricsMonitor: newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer, upstreamLogger, metricsStore),
 
 		processGroups: make(map[string]*ProcessGroup),
 
