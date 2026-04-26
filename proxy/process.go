@@ -58,6 +58,9 @@ type Process struct {
 	proxyLogger   *LogMonitor
 	memoryTracker *llamaCppMemoryTracker
 
+	promptProgressParser *promptProgressParser
+	promptProgressStop   context.CancelFunc
+
 	healthCheckTimeout      int
 	healthCheckLoopInterval time.Duration
 
@@ -161,6 +164,18 @@ func (p *Process) MemorySnapshot() *LlamaCppMemorySnapshot {
 		return nil
 	}
 	return p.memoryTracker.Snapshot()
+}
+
+func (p *Process) TrackPromptProgress(tracker *liveActivityTracker) {
+	if tracker == nil || p.processLogger == nil {
+		return
+	}
+	p.promptProgressParser = newPromptProgressParser(p.ID)
+	p.promptProgressStop = p.processLogger.OnLogData(func(data []byte) {
+		p.promptProgressParser.parseChunk(data, func(progress promptProcessingProgress) {
+			tracker.SetPromptProgress(progress.Model, progress.Progress)
+		})
+	})
 }
 
 // setLastRequestHandled sets the last request handled time in a thread-safe manner.
@@ -485,6 +500,11 @@ func (p *Process) StopImmediately() {
 // is in the state of starting, it will cancel it and shut it down. Once a process is in
 // the StateShutdown state, it can not be started again.
 func (p *Process) Shutdown() {
+	if p.promptProgressStop != nil {
+		p.promptProgressStop()
+		p.promptProgressStop = nil
+	}
+
 	if !isValidTransition(p.CurrentState(), StateStopping) {
 		return
 	}

@@ -191,6 +191,8 @@
             prompt_per_second: metric.prompt_per_second,
             tokens_per_second: metric.tokens_per_second,
             duration_ms: metric.duration_ms,
+            prompt_ms: metric.prompt_ms,
+            predicted_ms: metric.predicted_ms,
             has_capture: metric.has_capture,
           }
         : null,

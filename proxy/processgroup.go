@@ -42,7 +42,7 @@ type ProcessGroup struct {
 	testDelayFastPath func()
 }
 
-func NewProcessGroup(id string, config config.Config, proxyLogger *LogMonitor, upstreamLogger *LogMonitor) *ProcessGroup {
+func NewProcessGroup(id string, config config.Config, proxyLogger *LogMonitor, upstreamLogger *LogMonitor, liveActivity ...*liveActivityTracker) *ProcessGroup {
 	groupConfig, ok := config.Groups[id]
 	if !ok {
 		panic("Unable to find configuration for group id: " + id)
@@ -64,6 +64,9 @@ func NewProcessGroup(id string, config config.Config, proxyLogger *LogMonitor, u
 		modelConfig, modelID, _ := pg.config.FindConfig(modelID)
 		processLogger := NewLogMonitorWriter(upstreamLogger)
 		process := NewProcess(modelID, pg.config.HealthCheckTimeout, modelConfig, processLogger, pg.proxyLogger)
+		if len(liveActivity) > 0 {
+			process.TrackPromptProgress(liveActivity[0])
+		}
 		pg.processes[modelID] = process
 	}
 

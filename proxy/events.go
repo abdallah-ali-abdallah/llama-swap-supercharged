@@ -9,6 +9,7 @@ const LogDataEventID = 0x04
 const TokenMetricsEventID = 0x05
 const ModelPreloadedEventID = 0x06
 const InFlightRequestsEventID = 0x07
+const LiveActivityEventID = 0x08
 
 type ProcessStateChangeEvent struct {
 	ProcessName string
@@ -66,4 +67,12 @@ type InFlightRequestsEvent struct {
 
 func (e InFlightRequestsEvent) Type() uint32 {
 	return InFlightRequestsEventID
+}
+
+type LiveActivityEvent struct {
+	Rows []LiveActivityRow
+}
+
+func (e LiveActivityEvent) Type() uint32 {
+	return LiveActivityEventID
 }

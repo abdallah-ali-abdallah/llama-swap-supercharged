@@ -72,6 +72,8 @@ type TokenMetrics struct {
 	PromptPerSecond float64   `json:"prompt_per_second"`
 	TokensPerSecond float64   `json:"tokens_per_second"`
 	DurationMs      int       `json:"duration_ms"`
+	PromptMs        int       `json:"prompt_ms"`
+	PredictedMs     int       `json:"predicted_ms"`
 	HasCapture      bool      `json:"has_capture"`
 
 	// Speculative decoding stats (0 = not using spec decode)
@@ -117,6 +119,8 @@ type metricsMonitor struct {
 	// spec decode parser for tracking draft acceptance rates from upstream llama-server logs
 	specParser     *specDecodeParser
 	specParserStop func()
+
+	liveActivity *liveActivityTracker
 }
 
 // newMetricsMonitor creates a new metricsMonitor. captureBufferMB is the
@@ -588,6 +592,12 @@ func (mp *metricsMonitor) wrapHandler(
 	request *http.Request,
 	next func(modelID string, w http.ResponseWriter, r *http.Request) error,
 ) error {
+	liveActivityID := ""
+	if mp.liveActivity != nil {
+		liveActivityID = mp.liveActivity.Start(modelID)
+		defer mp.liveActivity.Finish(liveActivityID)
+	}
+
 	// Capture request body and headers if captures enabled
 	var reqBody []byte
 	var reqHeaders map[string]string
@@ -802,6 +812,8 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 	tokensPerSecond := -1.0
 	promptPerSecond := -1.0
 	durationMs := wallDurationMs
+	promptMs := 0
+	predictedMs := 0
 	generatedDrafts := 0
 	acceptedDrafts := 0
 
@@ -837,10 +849,12 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 		newInputTokens = int(timings.Get("prompt_n").Int())
 		outputTokens = int(timings.Get("predicted_n").Int())
 		promptPerSecond = timings.Get("prompt_per_second").Float()
-		tokensPerSecond = timings.Get("predicted_per_second").Float()
+		tokensPerSecond = predictedTokensPerSecond(outputTokens, timings)
 		generatedDrafts = int(timings.Get("draft_n").Int())
 		acceptedDrafts = int(timings.Get("draft_n_accepted").Int())
-		timingsDurationMs := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float())
+		promptMs = int(timings.Get("prompt_ms").Float())
+		predictedMs = int(timings.Get("predicted_ms").Float())
+		timingsDurationMs := promptMs + predictedMs
 		if timingsDurationMs > durationMs {
 			durationMs = timingsDurationMs
 		}
@@ -873,6 +887,8 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 		PromptPerSecond: promptPerSecond,
 		TokensPerSecond: tokensPerSecond,
 		DurationMs:      durationMs,
+		PromptMs:        promptMs,
+		PredictedMs:     predictedMs,
 	}
 	if generatedDrafts > 0 {
 		result.GeneratedDrafts = generatedDrafts
@@ -881,6 +897,17 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 	}
 
 	return result, nil
+}
+
+func predictedTokensPerSecond(outputTokens int, timings gjson.Result) float64 {
+	if outputTokens <= 1 {
+		return -1
+	}
+	speed := timings.Get("predicted_per_second").Float()
+	if speed <= 0 {
+		return -1
+	}
+	return speed
 }
 
 // decompressBody decompresses the body based on Content-Encoding header

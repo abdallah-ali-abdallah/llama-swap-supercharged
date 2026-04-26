@@ -174,6 +174,8 @@ func (s *metricsStore) init() error {
 			prompt_per_second REAL NOT NULL,
 			tokens_per_second REAL NOT NULL,
 			duration_ms INTEGER NOT NULL,
+			prompt_ms INTEGER NOT NULL DEFAULT 0,
+			predicted_ms INTEGER NOT NULL DEFAULT 0,
 			has_capture INTEGER NOT NULL,
 			draft_acceptance_rate REAL NOT NULL DEFAULT 0,
 			accepted_drafts INTEGER NOT NULL DEFAULT 0,
@@ -189,6 +191,8 @@ func (s *metricsStore) init() error {
 			prompt_per_second REAL NOT NULL,
 			tokens_per_second REAL NOT NULL,
 			duration_ms INTEGER NOT NULL,
+			prompt_ms INTEGER NOT NULL DEFAULT 0,
+			predicted_ms INTEGER NOT NULL DEFAULT 0,
 			has_capture INTEGER NOT NULL,
 			draft_acceptance_rate REAL NOT NULL DEFAULT 0,
 			accepted_drafts INTEGER NOT NULL DEFAULT 0,
@@ -221,6 +225,9 @@ func (s *metricsStore) init() error {
 	if err := s.addSpecDecodeColumns(); err != nil {
 		return err
 	}
+	if err := s.addTimingColumns(); err != nil {
+		return err
+	}
 
 	return s.migrateLegacyMetrics()
 }
@@ -240,6 +247,22 @@ func (s *metricsStore) addSpecDecodeColumns() error {
 	for _, cmd := range commands {
 		if _, err := s.db.Exec(cmd); err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("add speculative decoding columns: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *metricsStore) addTimingColumns() error {
+	commands := []string{
+		`ALTER TABLE token_metrics ADD COLUMN prompt_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE token_metrics ADD COLUMN predicted_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_metrics ADD COLUMN prompt_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_metrics ADD COLUMN predicted_ms INTEGER NOT NULL DEFAULT 0`,
+	}
+
+	for _, cmd := range commands {
+		if _, err := s.db.Exec(cmd); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("add timing columns: %w", err)
 		}
 	}
 	return nil
@@ -311,9 +334,9 @@ func (s *metricsStore) insertIntoTable(table string, metric TokenMetrics) error 
 	_, err := s.db.Exec(
 		fmt.Sprintf(`INSERT OR REPLACE INTO %s (
 			id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms, has_capture,
+			prompt_per_second, tokens_per_second, duration_ms, prompt_ms, predicted_ms, has_capture,
 			draft_acceptance_rate, accepted_drafts, generated_drafts
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, table),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, table),
 		metric.ID,
 		metric.Timestamp.UnixMilli(),
 		metric.Model,
@@ -323,6 +346,8 @@ func (s *metricsStore) insertIntoTable(table string, metric TokenMetrics) error 
 		metric.PromptPerSecond,
 		metric.TokensPerSecond,
 		metric.DurationMs,
+		metric.PromptMs,
+		metric.PredictedMs,
 		boolToInt(metric.HasCapture),
 		metric.DraftAcceptanceRate,
 		metric.AcceptedDrafts,
@@ -400,7 +425,7 @@ func (s *metricsStore) latest(limit int) ([]TokenMetrics, error) {
 
 	rows, err := s.db.Query(`SELECT
 			token_metrics.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms,
+			prompt_per_second, tokens_per_second, duration_ms, prompt_ms, predicted_ms,
 			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = token_metrics.id),
 			token_metrics.draft_acceptance_rate, token_metrics.accepted_drafts, token_metrics.generated_drafts
 		FROM token_metrics
@@ -436,7 +461,7 @@ func (s *metricsStore) query(q metricsQuery) ([]TokenMetrics, bool, error) {
 
 	query := fmt.Sprintf(`SELECT
 			%s.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
-			prompt_per_second, tokens_per_second, duration_ms,
+			prompt_per_second, tokens_per_second, duration_ms, prompt_ms, predicted_ms,
 			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = %s.id),
 			%s.draft_acceptance_rate, %s.accepted_drafts, %s.generated_drafts
 		FROM %s`, table, table, table, table, table, table)
@@ -794,6 +819,8 @@ func applyActivityFields(metric TokenMetrics, fields activityFieldsSettings) Tok
 	}
 	if !fields.Duration {
 		activity.DurationMs = 0
+		activity.PromptMs = 0
+		activity.PredictedMs = 0
 	}
 	return activity
 }
@@ -823,6 +850,8 @@ func scanTokenMetrics(rows *sql.Rows) ([]TokenMetrics, error) {
 			&metric.PromptPerSecond,
 			&metric.TokensPerSecond,
 			&metric.DurationMs,
+			&metric.PromptMs,
+			&metric.PredictedMs,
 			&hasCapture,
 			&metric.DraftAcceptanceRate,
 			&metric.AcceptedDrafts,

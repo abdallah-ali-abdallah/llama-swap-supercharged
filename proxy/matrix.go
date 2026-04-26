@@ -165,11 +165,14 @@ type Matrix struct {
 
 // NewMatrix creates a Matrix from config. It creates a Process for every
 // model defined in the config (any model can run alone even if not in a set).
-func NewMatrix(cfg config.Config, proxyLogger, upstreamLogger *LogMonitor) *Matrix {
+func NewMatrix(cfg config.Config, proxyLogger, upstreamLogger *LogMonitor, liveActivity ...*liveActivityTracker) *Matrix {
 	processes := make(map[string]*Process)
 	for modelID, modelConfig := range cfg.Models {
 		processLogger := NewLogMonitorWriter(upstreamLogger)
 		process := NewProcess(modelID, cfg.HealthCheckTimeout, modelConfig, processLogger, proxyLogger)
+		if len(liveActivity) > 0 {
+			process.TrackPromptProgress(liveActivity[0])
+		}
 		processes[modelID] = process
 	}
 

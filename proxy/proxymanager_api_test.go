@@ -348,6 +348,39 @@ func TestProxyManager_ExcludeFromMetricsSSE(t *testing.T) {
 	require.Equal(t, []string{"visible"}, metricModels(metrics))
 }
 
+func TestProxyManager_LiveActivitySSEInitialSnapshot(t *testing.T) {
+	pm := newExcludeMetricsAPIProxyManager(t, nil)
+	pm.liveActivity = newLiveActivityTracker()
+	pm.liveActivity.Start("visible")
+	pm.liveActivity.SetPromptProgress("visible", 0.5)
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(reqCtx)
+
+	done := make(chan struct{})
+	go func() {
+		pm.apiSendEvents(c)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for SSE stream to stop")
+	}
+
+	rows := liveActivityFromSSEBody(t, w.Body.String())
+	require.Len(t, rows, 1)
+	require.Equal(t, "visible", rows[0].Model)
+	require.True(t, rows[0].PPExact)
+	require.NotNil(t, rows[0].PPProgress)
+	require.InDelta(t, 0.5, *rows[0].PPProgress, 0.000001)
+}
+
 func newExcludeMetricsAPIProxyManagerWithStore(t *testing.T) *ProxyManager {
 	t.Helper()
 	logger := NewLogMonitorWriter(io.Discard)
@@ -416,6 +449,28 @@ func metricsFromSSEBody(t *testing.T, body string) []TokenMetrics {
 		metrics = append(metrics, eventMetrics...)
 	}
 	return metrics
+}
+
+func liveActivityFromSSEBody(t *testing.T, body string) []LiveActivityRow {
+	t.Helper()
+	rows := []LiveActivityRow{}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var envelope messageEnvelope
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &envelope); err != nil {
+			continue
+		}
+		if envelope.Type != msgTypeActivityLive {
+			continue
+		}
+		var eventRows []LiveActivityRow
+		require.NoError(t, json.Unmarshal([]byte(envelope.Data), &eventRows))
+		rows = eventRows
+	}
+	return rows
 }
 
 func metricModels(metrics []TokenMetrics) []string {

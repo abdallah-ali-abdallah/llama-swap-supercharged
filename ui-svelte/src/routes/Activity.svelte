@@ -1,9 +1,9 @@
 <script lang="ts">
   import { RefreshCw } from "lucide-svelte";
-  import { metrics, getCapture, listMetrics } from "../stores/api";
+  import { activityLive, metrics, getCapture, listMetrics } from "../stores/api";
   import Tooltip from "../components/Tooltip.svelte";
   import CaptureDialog from "../components/CaptureDialog.svelte";
-  import type { Metrics, ReqRespCapture } from "../lib/types";
+  import type { LiveActivityRow, Metrics, ReqRespCapture } from "../lib/types";
 
   const nf = new Intl.NumberFormat();
   const RANGE_OPTIONS = [
@@ -25,6 +25,43 @@
 
   function formatDuration(ms: number): string {
     return (ms / 1000).toFixed(2) + "s";
+  }
+
+  function formatDurationSeconds(ms: number): string {
+    return (ms / 1000).toFixed(3) + "s";
+  }
+
+  type ActivityRow =
+    | { kind: "live"; key: string; timestamp: string; live: LiveActivityRow }
+    | { kind: "completed"; key: string; timestamp: string; metric: Metrics };
+
+  function buildActivityRows(completed: Metrics[], live: LiveActivityRow[]): ActivityRow[] {
+    return [
+      ...live.map((row) => ({ kind: "live" as const, key: row.id, timestamp: row.timestamp, live: row })),
+      ...completed.map((metric) => ({ kind: "completed" as const, key: `metric-${metric.id}`, timestamp: metric.timestamp, metric })),
+    ].sort((a, b) => {
+      const timeDiff = Date.parse(b.timestamp) - Date.parse(a.timestamp);
+      if (Number.isFinite(timeDiff) && timeDiff !== 0) return timeDiff;
+      const aID = a.kind === "completed" ? a.metric.id : a.live.sequence;
+      const bID = b.kind === "completed" ? b.metric.id : b.live.sequence;
+      return bID - aID;
+    });
+  }
+
+  function formatPromptProgress(row: ActivityRow): string {
+    if (row.kind === "completed") return "100%";
+    if (!row.live.pp_exact || row.live.pp_progress === undefined || row.live.pp_progress === null) return "-";
+    return `${Math.round(Math.max(0, Math.min(1, row.live.pp_progress)) * 100)}%`;
+  }
+
+  function promptProgressClasses(row: ActivityRow): string {
+    if (row.kind === "completed") {
+      return "inline-flex min-w-14 justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300";
+    }
+    if (row.live.pp_exact && row.live.pp_progress !== undefined && row.live.pp_progress !== null) {
+      return "inline-flex min-w-14 justify-center rounded-full border border-[#5794f2]/30 bg-[#5794f2]/10 px-2 py-1 text-xs font-semibold text-[#174a8b] dark:text-[#cfe2ff]";
+    }
+    return "text-txtsecondary";
   }
 
   function formatRelativeTime(timestamp: string): string {
@@ -63,7 +100,8 @@
   let historicalError = $state("");
   let refreshTick = $state(0);
   let displayedMetrics = $derived(selectedRange === "realtime" ? $metrics : historicalMetrics);
-  let sortedMetrics = $derived([...displayedMetrics].sort((a, b) => b.id - a.id));
+  let displayedLiveRows = $derived(selectedRange === "realtime" ? $activityLive : []);
+  let activityRows = $derived(buildActivityRows(displayedMetrics, displayedLiveRows));
 
   let selectedCapture = $state<ReqRespCapture | null>(null);
   let selectedMetric = $state<Metrics | null>(null);
@@ -203,17 +241,18 @@
           Loading activity
         {:else if historicalError}
           {historicalError}
-        {:else if displayedMetrics.length === 0}
+        {:else if activityRows.length === 0}
           No activity
         {:else}
           {displayedMetrics.length.toLocaleString()} completed requests{selectedRange === "realtime" ? " in memory" : ""}
+          {selectedRange === "realtime" && displayedLiveRows.length > 0 ? `, ${displayedLiveRows.length.toLocaleString()} in progress` : ""}
           {historicalTruncated ? " (limited)" : ""}
         {/if}
       </div>
     </div>
   </header>
 
-  {#if displayedMetrics.length === 0}
+  {#if activityRows.length === 0}
     <div class="text-center py-8">
       <p class="text-gray-600">No activity data available</p>
     </div>
@@ -232,8 +271,13 @@
               Prompt <Tooltip content="new prompt tokens processed" />
             </th>
             <th class="px-6 py-3">Generated</th>
+            <th class="px-6 py-3">
+              PP % <Tooltip content="live llama.cpp prompt processing progress" />
+            </th>
             <th class="px-6 py-3">Prompt Processing</th>
             <th class="px-6 py-3">Generation Speed</th>
+            <th class="px-6 py-3">Prompt Time</th>
+            <th class="px-6 py-3">Token Generation Time</th>
             <th class="px-6 py-3">Duration</th>
             <th class="px-6 py-3">Draft Rate</th>
             <th class="px-6 py-3">Drafted Tokens</th>
@@ -241,41 +285,44 @@
           </tr>
         </thead>
         <tbody class="divide-y">
-          {#each sortedMetrics as metric (metric.id)}
+          {#each activityRows as row (row.key)}
             <tr class="whitespace-nowrap text-sm border-gray-200 dark:border-white/10">
-              <td class="px-4 py-4">{metric.id + 1}</td>
-              <td class="px-6 py-4">{formatRelativeTime(metric.timestamp)}</td>
-              <td class="px-6 py-4">{metric.model}</td>
-              <td class="px-6 py-4">{metric.cache_tokens > 0 ? metric.cache_tokens.toLocaleString() : "-"}</td>
-              <td class="px-6 py-4">{metric.new_input_tokens.toLocaleString()}</td>
-              <td class="px-6 py-4">{metric.output_tokens.toLocaleString()}</td>
-              <td class="px-6 py-4">{formatSpeed(metric.prompt_per_second)}</td>
-              <td class="px-6 py-4">{formatSpeed(metric.tokens_per_second)}</td>
-              <td class="px-6 py-4">{formatDuration(metric.duration_ms)}</td>
+              <td class="px-4 py-4">{row.kind === "completed" ? row.metric.id + 1 : "live"}</td>
+              <td class="px-6 py-4">{formatRelativeTime(row.timestamp)}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? row.metric.model : row.live.model}</td>
+              <td class="px-6 py-4">{row.kind === "completed" && row.metric.cache_tokens > 0 ? row.metric.cache_tokens.toLocaleString() : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? row.metric.new_input_tokens.toLocaleString() : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? row.metric.output_tokens.toLocaleString() : "-"}</td>
+              <td class="px-6 py-4"><span class={promptProgressClasses(row)}>{formatPromptProgress(row)}</span></td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.prompt_per_second) : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.tokens_per_second) : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatDurationSeconds(row.metric.prompt_ms) : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatDurationSeconds(row.metric.predicted_ms) : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatDuration(row.metric.duration_ms) : "-"}</td>
               <td class="px-6 py-4">
-                {#if metric.generated_drafts > 0}
-                  <span class="font-medium">{(metric.draft_acceptance_rate * 100).toFixed(1)}%</span>
-                  <span class="text-txtsecondary text-xs">{metric.accepted_drafts}/{metric.generated_drafts}</span>
+                {#if row.kind === "completed" && row.metric.generated_drafts > 0}
+                  <span class="font-medium">{(row.metric.draft_acceptance_rate * 100).toFixed(1)}%</span>
+                  <span class="text-txtsecondary text-xs">{row.metric.accepted_drafts}/{row.metric.generated_drafts}</span>
                 {:else}
                   <span class="text-txtsecondary">-</span>
                 {/if}
               </td>
               <td class="px-6 py-4">
-                {#if metric.generated_drafts > 0}
-                  <span class="font-medium">{nf.format(metric.generated_drafts)}</span>
-                  <span class="text-txtsecondary text-xs">({nf.format(metric.accepted_drafts)} accepted)</span>
+                {#if row.kind === "completed" && row.metric.generated_drafts > 0}
+                  <span class="font-medium">{nf.format(row.metric.generated_drafts)}</span>
+                  <span class="text-txtsecondary text-xs">({nf.format(row.metric.accepted_drafts)} accepted)</span>
                 {:else}
                   <span class="text-txtsecondary">-</span>
                 {/if}
               </td>
               <td class="px-6 py-4">
-                {#if metric.has_capture}
+                {#if row.kind === "completed" && row.metric.has_capture}
                   <button
-                    onclick={() => viewCapture(metric)}
-                    disabled={loadingCaptureId === metric.id}
+                    onclick={() => viewCapture(row.metric)}
+                    disabled={loadingCaptureId === row.metric.id}
                     class="btn btn--sm"
                   >
-                    {loadingCaptureId === metric.id ? "..." : "View"}
+                    {loadingCaptureId === row.metric.id ? "..." : "View"}
                   </button>
                 {:else}
                   <span class="text-txtsecondary">-</span>

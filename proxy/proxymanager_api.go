@@ -130,10 +130,11 @@ func (pm *ProxyManager) getModelStatus() []Model {
 type messageType string
 
 const (
-	msgTypeModelStatus messageType = "modelStatus"
-	msgTypeLogData     messageType = "logData"
-	msgTypeMetrics     messageType = "metrics"
-	msgTypeInFlight    messageType = "inflight"
+	msgTypeModelStatus  messageType = "modelStatus"
+	msgTypeLogData      messageType = "logData"
+	msgTypeMetrics      messageType = "metrics"
+	msgTypeInFlight     messageType = "inflight"
+	msgTypeActivityLive messageType = "activityLive"
 )
 
 type messageEnvelope struct {
@@ -209,6 +210,18 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 		}
 	}
 
+	sendLiveActivity := func(rows []LiveActivityRow) {
+		jsonData, err := json.Marshal(rows)
+		if err == nil {
+			select {
+			case sendBuffer <- messageEnvelope{Type: msgTypeActivityLive, Data: string(jsonData)}:
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+	}
+
 	/**
 	 * Send updated models list
 	 */
@@ -243,12 +256,22 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 		sendInFlight(e.Total)
 	})()
 
+	/**
+	 * Send live activity rows with prompt processing progress.
+	 */
+	defer event.On(func(e LiveActivityEvent) {
+		sendLiveActivity(e.Rows)
+	})()
+
 	// send initial batch of data
 	sendLogData("proxy", pm.proxyLogger.GetHistory())
 	sendLogData("upstream", pm.upstreamLogger.GetHistory())
 	sendModels()
 	sendMetrics(pm.metricsMonitor.getMetrics())
 	sendInFlight(pm.inFlightCounter.Current())
+	if pm.liveActivity != nil {
+		sendLiveActivity(pm.liveActivity.Snapshot())
+	}
 
 	for {
 		select {

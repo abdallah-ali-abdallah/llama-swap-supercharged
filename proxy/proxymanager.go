@@ -75,6 +75,7 @@ type ProxyManager struct {
 	muxLogger      *LogMonitor
 
 	metricsMonitor *metricsMonitor
+	liveActivity   *liveActivityTracker
 
 	processGroups map[string]*ProcessGroup
 
@@ -275,6 +276,10 @@ func New(proxyConfig config.Config) *ProxyManager {
 		peerProxy = nil
 	}
 
+	liveActivity := newLiveActivityTracker()
+	metricsMonitor := newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer, upstreamLogger, metricsStore)
+	metricsMonitor.liveActivity = liveActivity
+
 	pm := &ProxyManager{
 		config:    proxyConfig,
 		ginEngine: gin.New(),
@@ -283,7 +288,8 @@ func New(proxyConfig config.Config) *ProxyManager {
 		muxLogger:      muxLogger,
 		upstreamLogger: upstreamLogger,
 
-		metricsMonitor: newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer, upstreamLogger, metricsStore),
+		metricsMonitor: metricsMonitor,
+		liveActivity:   liveActivity,
 
 		processGroups: make(map[string]*ProcessGroup),
 
@@ -301,10 +307,10 @@ func New(proxyConfig config.Config) *ProxyManager {
 
 	// create either matrix or process groups (mutually exclusive)
 	if proxyConfig.Matrix != nil {
-		pm.matrix = NewMatrix(proxyConfig, proxyLogger, upstreamLogger)
+		pm.matrix = NewMatrix(proxyConfig, proxyLogger, upstreamLogger, liveActivity)
 	} else {
 		for groupID := range proxyConfig.Groups {
-			processGroup := NewProcessGroup(groupID, proxyConfig, proxyLogger, upstreamLogger)
+			processGroup := NewProcessGroup(groupID, proxyConfig, proxyLogger, upstreamLogger, liveActivity)
 			pm.processGroups[groupID] = processGroup
 		}
 	}

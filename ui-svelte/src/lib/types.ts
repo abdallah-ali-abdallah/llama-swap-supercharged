@@ -56,6 +56,8 @@ export interface Metrics {
   prompt_per_second: number;
   tokens_per_second: number;
   duration_ms: number;
+  prompt_ms: number;
+  predicted_ms: number;
   has_capture: boolean;
   draft_acceptance_rate: number;
   accepted_drafts: number;
@@ -80,8 +82,19 @@ export interface InFlightStats {
   total: number;
 }
 
+export interface LiveActivityRow {
+  id: string;
+  sequence: number;
+  timestamp: string;
+  model: string;
+  status: "in_progress";
+  pp_progress?: number;
+  pp_exact: boolean;
+  updated_at?: string;
+}
+
 export interface APIEventEnvelope {
-  type: "modelStatus" | "logData" | "metrics" | "inflight";
+  type: "modelStatus" | "logData" | "metrics" | "inflight" | "activityLive";
   data: string;
 }
 

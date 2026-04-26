@@ -427,6 +427,8 @@ func TestMetricsStore_AppliesActivityFields(t *testing.T) {
 		PromptPerSecond: 44.5,
 		TokensPerSecond: 55.5,
 		DurationMs:      660,
+		PromptMs:        120,
+		PredictedMs:     540,
 	}
 	require.NoError(t, store.insert(metric))
 
@@ -439,6 +441,8 @@ func TestMetricsStore_AppliesActivityFields(t *testing.T) {
 	require.Equal(t, 22, usageMetrics[0].NewInputTokens)
 	require.Equal(t, 33, usageMetrics[0].OutputTokens)
 	require.Equal(t, 660, usageMetrics[0].DurationMs)
+	require.Equal(t, 120, usageMetrics[0].PromptMs)
+	require.Equal(t, 540, usageMetrics[0].PredictedMs)
 
 	activityMetrics, truncated, err := store.query(metricsQuery{Limit: 10, Scope: "activity"})
 	require.NoError(t, err)
@@ -451,6 +455,8 @@ func TestMetricsStore_AppliesActivityFields(t *testing.T) {
 	require.Equal(t, 44.5, activityMetrics[0].PromptPerSecond)
 	require.Equal(t, 55.5, activityMetrics[0].TokensPerSecond)
 	require.Zero(t, activityMetrics[0].DurationMs)
+	require.Zero(t, activityMetrics[0].PromptMs)
+	require.Zero(t, activityMetrics[0].PredictedMs)
 }
 
 func TestMetricsStore_MigratesLegacyActivityRows(t *testing.T) {
@@ -495,6 +501,8 @@ func TestMetricsStore_MigratesLegacyActivityRows(t *testing.T) {
 	require.Len(t, activityMetrics, 1)
 	require.Equal(t, "legacy-model", activityMetrics[0].Model)
 	require.True(t, activityMetrics[0].HasCapture)
+	require.Zero(t, activityMetrics[0].PromptMs)
+	require.Zero(t, activityMetrics[0].PredictedMs)
 
 	capture, exists, err := store.getCapture(21)
 	require.NoError(t, err)

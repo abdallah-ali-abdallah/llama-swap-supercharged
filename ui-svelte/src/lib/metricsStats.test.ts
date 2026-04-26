@@ -13,6 +13,8 @@ function metric(overrides: Partial<Metrics>): Metrics {
     prompt_per_second: -1,
     tokens_per_second: -1,
     duration_ms: 0,
+    prompt_ms: 0,
+    predicted_ms: 0,
     has_capture: false,
     draft_acceptance_rate: 0,
     accepted_drafts: 0,

@@ -242,9 +242,35 @@ func TestMetricsMonitor_WrapHandler(t *testing.T) {
 		assert.Equal(t, 150.5, metrics[0].PromptPerSecond)
 		assert.Equal(t, 25.5, metrics[0].TokensPerSecond)
 		assert.Equal(t, 2000, metrics[0].DurationMs) // 500 + 1500
+		assert.Equal(t, 500, metrics[0].PromptMs)
+		assert.Equal(t, 1500, metrics[0].PredictedMs)
 		assert.Equal(t, 12, metrics[0].GeneratedDrafts)
 		assert.Equal(t, 9, metrics[0].AcceptedDrafts)
 		assert.Equal(t, 0.75, metrics[0].DraftAcceptanceRate)
+	})
+
+	t.Run("tracks live activity during request", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm.liveActivity = newLiveActivityTracker()
+
+		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
+			rows := mm.liveActivity.Snapshot()
+			assert.Equal(t, 1, len(rows))
+			assert.Equal(t, "test-model", rows[0].Model)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+			return nil
+		}
+
+		req := httptest.NewRequest("POST", "/test", nil)
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+
+		assert.NoError(t, err)
+		assert.Empty(t, mm.liveActivity.Snapshot())
 	})
 
 	t.Run("enriches metrics with speculative decoding stats from upstream logs", func(t *testing.T) {
@@ -513,6 +539,8 @@ data: [DONE]
 		assert.Equal(t, 200.5, metrics[0].PromptPerSecond)
 		assert.Equal(t, 35.5, metrics[0].TokensPerSecond)
 		assert.Equal(t, 2400, metrics[0].DurationMs) // 600 + 1800
+		assert.Equal(t, 600, metrics[0].PromptMs)
+		assert.Equal(t, 1800, metrics[0].PredictedMs)
 	})
 
 	t.Run("infill request with empty array records minimal metrics", func(t *testing.T) {
@@ -674,8 +702,31 @@ func TestMetricsMonitor_ParseMetrics(t *testing.T) {
 		assert.Equal(t, 5, metrics.NewInputTokens)
 		assert.Equal(t, 1, metrics.OutputTokens)
 		assert.Equal(t, 10.0, metrics.PromptPerSecond)
-		assert.Equal(t, 2.0, metrics.TokensPerSecond)
+		assert.Equal(t, -1.0, metrics.TokensPerSecond)
+		assert.Equal(t, 5, metrics.PromptMs)
+		assert.Equal(t, 15, metrics.PredictedMs)
 		assert.GreaterOrEqual(t, metrics.DurationMs, 5000)
+	})
+
+	t.Run("ignores generation speed for a single output token", func(t *testing.T) {
+		start := time.Now().Add(-5 * time.Second)
+		usage := gjson.Parse(`{"prompt_tokens": 120024, "completion_tokens": 1}`)
+		timings := gjson.Parse(`{
+			"prompt_n": 120024,
+			"predicted_n": 1,
+			"prompt_per_second": 342.44,
+			"predicted_per_second": 1000000.0,
+			"prompt_ms": 350498.411,
+			"predicted_ms": 0.001
+		}`)
+
+		metrics, err := parseMetrics("test-model", start, usage, timings)
+
+		assert.NoError(t, err)
+		assert.Equal(t, 1, metrics.OutputTokens)
+		assert.Equal(t, -1.0, metrics.TokensPerSecond)
+		assert.Equal(t, 350498, metrics.PromptMs)
+		assert.Equal(t, 0, metrics.PredictedMs)
 	})
 
 	t.Run("prefers timings over usage data", func(t *testing.T) {
@@ -716,6 +767,8 @@ func TestMetricsMonitor_ParseMetrics(t *testing.T) {
 		// Should use timings values, not usage values
 		assert.Equal(t, 100, metrics[0].NewInputTokens)
 		assert.Equal(t, 50, metrics[0].OutputTokens)
+		assert.Equal(t, 500, metrics[0].PromptMs)
+		assert.Equal(t, 1500, metrics[0].PredictedMs)
 	})
 
 	t.Run("handles missing cache_n in timings", func(t *testing.T) {
