@@ -26,7 +26,8 @@ type promptProgressParser struct {
 	mu          sync.Mutex
 	model       string
 	partialLine string
-	reProgress  *regexp.Regexp
+	reProgress  *regexp.Regexp // old llama.cpp format
+	reProgress2 *regexp.Regexp // new llama.cpp format
 }
 
 func newPromptProgressParser(model string) *promptProgressParser {
@@ -34,6 +35,9 @@ func newPromptProgressParser(model string) *promptProgressParser {
 		model: model,
 		reProgress: regexp.MustCompile(
 			`slot update_slots:\s+id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|.*prompt processing progress,\s+n_tokens\s*=\s*(\d+),\s*batch\.n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)`,
+		),
+		reProgress2: regexp.MustCompile(
+			`slot print_timing:\s+id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|.*prompt processing,\s+n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)`,
 		),
 	}
 }
@@ -72,33 +76,52 @@ func (p *promptProgressParser) parseChunk(data []byte, callback func(promptProce
 
 func (p *promptProgressParser) parseLine(line string, parsedAt time.Time) (promptProcessingProgress, bool) {
 	line = strings.TrimSpace(line)
-	if !strings.Contains(line, "prompt processing progress") {
+	if !strings.Contains(line, "prompt processing") {
 		return promptProcessingProgress{}, false
 	}
 
 	matches := p.reProgress.FindStringSubmatch(line)
-	if len(matches) != 6 {
-		return promptProcessingProgress{}, false
+	if len(matches) == 6 {
+		slotID, err1 := strconv.Atoi(matches[1])
+		taskID, err2 := strconv.Atoi(matches[2])
+		tokens, err3 := strconv.Atoi(matches[3])
+		batchTokens, err4 := strconv.Atoi(matches[4])
+		progress, err5 := strconv.ParseFloat(matches[5], 64)
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
+			return promptProcessingProgress{}, false
+		}
+		return promptProcessingProgress{
+			Model:       p.model,
+			SlotID:      slotID,
+			TaskID:      taskID,
+			Tokens:      tokens,
+			BatchTokens: batchTokens,
+			Progress:    clampPromptProgress(progress),
+			ParsedAt:    parsedAt,
+		}, true
 	}
 
-	slotID, err1 := strconv.Atoi(matches[1])
-	taskID, err2 := strconv.Atoi(matches[2])
-	tokens, err3 := strconv.Atoi(matches[3])
-	batchTokens, err4 := strconv.Atoi(matches[4])
-	progress, err5 := strconv.ParseFloat(matches[5], 64)
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
-		return promptProcessingProgress{}, false
+	matches = p.reProgress2.FindStringSubmatch(line)
+	if len(matches) == 5 {
+		slotID, err1 := strconv.Atoi(matches[1])
+		taskID, err2 := strconv.Atoi(matches[2])
+		tokens, err3 := strconv.Atoi(matches[3])
+		progress, err4 := strconv.ParseFloat(matches[4], 64)
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+			return promptProcessingProgress{}, false
+		}
+		return promptProcessingProgress{
+			Model:       p.model,
+			SlotID:      slotID,
+			TaskID:      taskID,
+			Tokens:      tokens,
+			BatchTokens: tokens,
+			Progress:    clampPromptProgress(progress),
+			ParsedAt:    parsedAt,
+		}, true
 	}
 
-	return promptProcessingProgress{
-		Model:       p.model,
-		SlotID:      slotID,
-		TaskID:      taskID,
-		Tokens:      tokens,
-		BatchTokens: batchTokens,
-		Progress:    clampPromptProgress(progress),
-		ParsedAt:    parsedAt,
-	}, true
+	return promptProcessingProgress{}, false
 }
 
 func clampPromptProgress(progress float64) float64 {

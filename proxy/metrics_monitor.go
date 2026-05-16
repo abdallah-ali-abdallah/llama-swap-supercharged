@@ -75,6 +75,7 @@ type TokenMetrics struct {
 	PromptMs        int       `json:"prompt_ms"`
 	PredictedMs     int       `json:"predicted_ms"`
 	HasCapture      bool      `json:"has_capture"`
+	Multimodal      bool      `json:"multimodal"`
 
 	// Speculative decoding stats (0 = not using spec decode)
 	DraftAcceptanceRate float64 `json:"draft_acceptance_rate"`
@@ -721,6 +722,7 @@ func (mp *metricsMonitor) wrapHandler(
 		}
 	}
 
+	tm.Multimodal = hasImageIndicators(reqBody) || hasImageIndicators(body)
 	mp.enrichWithDraftStats(&tm)
 	metricID := mp.addMetrics(tm)
 
@@ -741,6 +743,55 @@ func (mp *metricsMonitor) captureRedactHeaders() bool {
 		return true
 	}
 	return store.settings().CaptureRedactHeaders
+}
+
+func hasImageIndicators(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	// Quick string check to avoid parsing when definitely not multimodal
+	s := string(body)
+	if !strings.Contains(s, "image") && !strings.Contains(s, "Image") && !strings.Contains(s, "b64_json") {
+		return false
+	}
+
+	parsed := gjson.ParseBytes(body)
+
+	// llama.cpp native image format
+	if parsed.Get("image_data").Exists() {
+		return true
+	}
+
+	// OpenAI-compatible chat completions with vision
+	for _, msg := range parsed.Get("messages").Array() {
+		content := msg.Get("content")
+		if content.IsArray() {
+			for _, part := range content.Array() {
+				t := part.Get("type").String()
+				if t == "image_url" || t == "image" {
+					return true
+				}
+			}
+		}
+	}
+
+	// Response-side image indicators
+	if parsed.Get("b64_json").Exists() {
+		return true
+	}
+	if parsed.Get("images").Exists() {
+		return true
+	}
+	for _, item := range parsed.Get("data").Array() {
+		if item.Get("b64_json").Exists() {
+			return true
+		}
+		if url := item.Get("url").String(); strings.Contains(url, "data:image/") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func processStreamingResponse(modelID string, start time.Time, body []byte) (TokenMetrics, error) {

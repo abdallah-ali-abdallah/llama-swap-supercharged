@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -177,6 +178,7 @@ func (s *metricsStore) init() error {
 			prompt_ms INTEGER NOT NULL DEFAULT 0,
 			predicted_ms INTEGER NOT NULL DEFAULT 0,
 			has_capture INTEGER NOT NULL,
+			multimodal INTEGER NOT NULL DEFAULT 0,
 			draft_acceptance_rate REAL NOT NULL DEFAULT 0,
 			accepted_drafts INTEGER NOT NULL DEFAULT 0,
 			generated_drafts INTEGER NOT NULL DEFAULT 0
@@ -194,6 +196,7 @@ func (s *metricsStore) init() error {
 			prompt_ms INTEGER NOT NULL DEFAULT 0,
 			predicted_ms INTEGER NOT NULL DEFAULT 0,
 			has_capture INTEGER NOT NULL,
+			multimodal INTEGER NOT NULL DEFAULT 0,
 			draft_acceptance_rate REAL NOT NULL DEFAULT 0,
 			accepted_drafts INTEGER NOT NULL DEFAULT 0,
 			generated_drafts INTEGER NOT NULL DEFAULT 0
@@ -226,6 +229,12 @@ func (s *metricsStore) init() error {
 		return err
 	}
 	if err := s.addTimingColumns(); err != nil {
+		return err
+	}
+	if err := s.addMultimodalColumn(); err != nil {
+		return err
+	}
+	if err := s.migrateMultimodalFlags(); err != nil {
 		return err
 	}
 
@@ -266,6 +275,83 @@ func (s *metricsStore) addTimingColumns() error {
 		}
 	}
 	return nil
+}
+
+func (s *metricsStore) addMultimodalColumn() error {
+	commands := []string{
+		`ALTER TABLE token_metrics ADD COLUMN multimodal INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_metrics ADD COLUMN multimodal INTEGER NOT NULL DEFAULT 0`,
+	}
+
+	for _, cmd := range commands {
+		if _, err := s.db.Exec(cmd); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("add multimodal columns: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *metricsStore) migrateMultimodalFlags() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT c.id, c.capture_zstd
+		FROM activity_request_captures c
+		INNER JOIN activity_metrics m ON c.id = m.id
+		WHERE m.multimodal = 0
+	`)
+	if err != nil {
+		return fmt.Errorf("query captures for multimodal migration: %w", err)
+	}
+
+	type captureRow struct {
+		id         int
+		compressed []byte
+	}
+	var captures []captureRow
+	for rows.Next() {
+		var row captureRow
+		if err := rows.Scan(&row.id, &row.compressed); err != nil {
+			continue
+		}
+		captures = append(captures, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate captures for multimodal migration: %w", err)
+	}
+	rows.Close()
+
+	if len(captures) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin multimodal migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, row := range captures {
+		decompressed, err := decompressCapture(row.compressed)
+		if err != nil {
+			continue
+		}
+
+		var capture ReqRespCapture
+		if err := json.Unmarshal(decompressed, &capture); err != nil {
+			continue
+		}
+
+		if hasImageIndicators(capture.ReqBody) || hasImageIndicators(capture.RespBody) {
+			_, _ = tx.Exec(`UPDATE token_metrics SET multimodal = 1 WHERE id = ?`, row.id)
+			_, _ = tx.Exec(`UPDATE activity_metrics SET multimodal = 1 WHERE id = ?`, row.id)
+		}
+	}
+
+	return tx.Commit()
 }
 
 func isDuplicateColumnError(err error) bool {
@@ -335,8 +421,8 @@ func (s *metricsStore) insertIntoTable(table string, metric TokenMetrics) error 
 		fmt.Sprintf(`INSERT OR REPLACE INTO %s (
 			id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms, prompt_ms, predicted_ms, has_capture,
-			draft_acceptance_rate, accepted_drafts, generated_drafts
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, table),
+			multimodal, draft_acceptance_rate, accepted_drafts, generated_drafts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, table),
 		metric.ID,
 		metric.Timestamp.UnixMilli(),
 		metric.Model,
@@ -349,6 +435,7 @@ func (s *metricsStore) insertIntoTable(table string, metric TokenMetrics) error 
 		metric.PromptMs,
 		metric.PredictedMs,
 		boolToInt(metric.HasCapture),
+		boolToInt(metric.Multimodal),
 		metric.DraftAcceptanceRate,
 		metric.AcceptedDrafts,
 		metric.GeneratedDrafts,
@@ -427,6 +514,7 @@ func (s *metricsStore) latest(limit int) ([]TokenMetrics, error) {
 			token_metrics.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms, prompt_ms, predicted_ms,
 			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = token_metrics.id),
+			token_metrics.multimodal,
 			token_metrics.draft_acceptance_rate, token_metrics.accepted_drafts, token_metrics.generated_drafts
 		FROM token_metrics
 		ORDER BY token_metrics.id DESC
@@ -463,8 +551,9 @@ func (s *metricsStore) query(q metricsQuery) ([]TokenMetrics, bool, error) {
 			%s.id, timestamp_ms, model, cache_tokens, new_input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms, prompt_ms, predicted_ms,
 			EXISTS(SELECT 1 FROM activity_request_captures WHERE activity_request_captures.id = %s.id),
+			%s.multimodal,
 			%s.draft_acceptance_rate, %s.accepted_drafts, %s.generated_drafts
-		FROM %s`, table, table, table, table, table, table)
+		FROM %s`, table, table, table, table, table, table, table)
 	args := []any{}
 
 	if q.From != nil || q.To != nil {
@@ -840,6 +929,7 @@ func scanTokenMetrics(rows *sql.Rows) ([]TokenMetrics, error) {
 		var metric TokenMetrics
 		var timestampMs int64
 		var hasCapture int
+		var multimodal int
 		if err := rows.Scan(
 			&metric.ID,
 			&timestampMs,
@@ -853,6 +943,7 @@ func scanTokenMetrics(rows *sql.Rows) ([]TokenMetrics, error) {
 			&metric.PromptMs,
 			&metric.PredictedMs,
 			&hasCapture,
+			&multimodal,
 			&metric.DraftAcceptanceRate,
 			&metric.AcceptedDrafts,
 			&metric.GeneratedDrafts,
@@ -861,6 +952,7 @@ func scanTokenMetrics(rows *sql.Rows) ([]TokenMetrics, error) {
 		}
 		metric.Timestamp = time.UnixMilli(timestampMs)
 		metric.HasCapture = hasCapture != 0
+		metric.Multimodal = multimodal != 0
 		metrics = append(metrics, metric)
 	}
 	if err := rows.Err(); err != nil {

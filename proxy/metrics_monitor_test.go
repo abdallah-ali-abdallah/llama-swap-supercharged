@@ -1402,3 +1402,59 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		assert.Nil(t, capture)
 	})
 }
+
+func TestMetricsMonitor_HasImageIndicators(t *testing.T) {
+	t.Run("empty body", func(t *testing.T) {
+		assert.False(t, hasImageIndicators(nil))
+		assert.False(t, hasImageIndicators([]byte{}))
+	})
+
+	t.Run("plain text without image", func(t *testing.T) {
+		assert.False(t, hasImageIndicators([]byte(`{"model": "test", "prompt": "hello"}`)))
+	})
+
+	t.Run("llama.cpp image_data field", func(t *testing.T) {
+		body := `{"prompt": "describe", "image_data": [{"data": "base64...", "id": 10}]}`
+		assert.True(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("OpenAI vision image_url", func(t *testing.T) {
+		body := `{"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]}]}`
+		assert.True(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("OpenAI vision image type", func(t *testing.T) {
+		body := `{"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}]}]}`
+		assert.True(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("text-only messages", func(t *testing.T) {
+		body := `{"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]}`
+		assert.False(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("string content in messages", func(t *testing.T) {
+		body := `{"messages": [{"role": "user", "content": "hello"}]}`
+		assert.False(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("image generation b64_json response", func(t *testing.T) {
+		body := `{"created": 1234567890, "data": [{"b64_json": "iVBORw0KGgo="}]}`
+		assert.True(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("sdapi images response", func(t *testing.T) {
+		body := `{"images": ["iVBORw0KGgo="], "parameters": {}}`
+		assert.True(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("data url in response", func(t *testing.T) {
+		body := `{"data": [{"url": "data:image/png;base64,abc"}]}`
+		assert.True(t, hasImageIndicators([]byte(body)))
+	})
+
+	t.Run("text response without images", func(t *testing.T) {
+		body := `{"choices": [{"message": {"content": "hello"}}], "usage": {"prompt_tokens": 10}}`
+		assert.False(t, hasImageIndicators([]byte(body)))
+	})
+}
