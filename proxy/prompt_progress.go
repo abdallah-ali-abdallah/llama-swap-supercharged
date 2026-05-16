@@ -198,6 +198,7 @@ type LiveActivityRow struct {
 	PPExact         bool       `json:"pp_exact"`
 	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 	GeneratedTokens *int       `json:"generated_tokens,omitempty"`
+	generationExact bool       // true if GeneratedTokens came from exact log count
 }
 
 type liveActivityTracker struct {
@@ -330,6 +331,12 @@ func (t *liveActivityTracker) UpdateGeneratedTokens(id string, tokens int) {
 		return
 	}
 
+	// Don't override an exact log count with an SSE approximation.
+	if row.generationExact {
+		t.mu.Unlock()
+		return
+	}
+
 	now := time.Now()
 	row.GeneratedTokens = &tokens
 	row.UpdatedAt = &now
@@ -362,6 +369,7 @@ func (t *liveActivityTracker) SetGeneratedTokens(model string, tokens int) {
 			return
 		}
 		row.GeneratedTokens = &tokens
+		row.generationExact = true
 		row.UpdatedAt = &now
 		t.rows[id] = row
 	}

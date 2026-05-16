@@ -185,6 +185,78 @@ func TestGenerationTokenParser_IgnoresMalformedLines(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestGenerationTokenParser_ParseChunk_SingleLine(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+	var results []int
+
+	parser.parseChunk([]byte("slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  44.95 t/s\n"), func(model string, n int) {
+		require.Equal(t, "test-model", model)
+		results = append(results, n)
+	})
+
+	require.Equal(t, []int{100}, results)
+}
+
+func TestGenerationTokenParser_ParseChunk_MultipleLines(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+	var results []int
+
+	data := []byte(
+		"slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  44.95 t/s\n" +
+			"0.17.821.721 I slot print_timing: id  0 | task 0 | n_decoded =    228, tg =  43.58 t/s\n",
+	)
+	parser.parseChunk(data, func(model string, n int) {
+		results = append(results, n)
+	})
+
+	require.Equal(t, []int{100, 228}, results)
+}
+
+func TestGenerationTokenParser_ParseChunk_SplitLine(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+	var results []int
+
+	// first chunk is an incomplete line
+	parser.parseChunk([]byte("slot print_timing: id  0 | task 0 | n_decoded =    10"), func(model string, n int) {
+		results = append(results, n)
+	})
+	require.Empty(t, results)
+
+	// second chunk completes the line
+	parser.parseChunk([]byte("0, tg =  44.95 t/s\n"), func(model string, n int) {
+		results = append(results, n)
+	})
+	require.Equal(t, []int{100}, results)
+}
+
+func TestLiveActivityTracker_UpdateGeneratedTokens_SuppressedWhenExact(t *testing.T) {
+	tracker := newLiveActivityTracker()
+	id := tracker.Start("test-model")
+
+	// Approximate count arrives first via SSE
+	tracker.UpdateGeneratedTokens(id, 10)
+	rows := tracker.Snapshot()
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].GeneratedTokens)
+	require.Equal(t, 10, *rows[0].GeneratedTokens)
+	require.False(t, rows[0].generationExact)
+
+	// Exact count arrives from llama.cpp logs
+	tracker.SetGeneratedTokens("test-model", 42)
+	rows = tracker.Snapshot()
+	require.Equal(t, 42, *rows[0].GeneratedTokens)
+	require.True(t, rows[0].generationExact)
+
+	// Subsequent SSE approximation is ignored
+	tracker.UpdateGeneratedTokens(id, 15)
+	rows = tracker.Snapshot()
+	require.Equal(t, 42, *rows[0].GeneratedTokens)
+	require.True(t, rows[0].generationExact)
+
+	tracker.Finish(id)
+	require.Empty(t, tracker.Snapshot())
+}
+
 func TestLiveActivityTracker_SetGeneratedTokens(t *testing.T) {
 	tracker := newLiveActivityTracker()
 	tracker.Start("test-model")
@@ -194,6 +266,7 @@ func TestLiveActivityTracker_SetGeneratedTokens(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.NotNil(t, rows[0].GeneratedTokens)
 	require.Equal(t, 42, *rows[0].GeneratedTokens)
+	require.True(t, rows[0].generationExact)
 
 	// Duplicate value should not emit
 	tracker.SetGeneratedTokens("test-model", 42)
@@ -203,6 +276,7 @@ func TestLiveActivityTracker_SetGeneratedTokens(t *testing.T) {
 	tracker.SetGeneratedTokens("test-model", 100)
 	rows = tracker.Snapshot()
 	require.Equal(t, 100, *rows[0].GeneratedTokens)
+	require.True(t, rows[0].generationExact)
 }
 
 func TestLiveActivityTracker_SetGeneratedTokens_AmbiguousWhenMultiple(t *testing.T) {
