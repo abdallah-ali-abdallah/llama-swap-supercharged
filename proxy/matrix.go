@@ -172,6 +172,7 @@ func NewMatrix(cfg config.Config, proxyLogger, upstreamLogger *LogMonitor, liveA
 		process := NewProcess(modelID, cfg.HealthCheckTimeout, modelConfig, processLogger, proxyLogger)
 		if len(liveActivity) > 0 {
 			process.TrackPromptProgress(liveActivity[0])
+			process.TrackGenerationTokens(liveActivity[0])
 		}
 		processes[modelID] = process
 	}

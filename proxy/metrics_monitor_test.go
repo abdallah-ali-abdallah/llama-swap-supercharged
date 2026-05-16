@@ -1458,3 +1458,26 @@ func TestMetricsMonitor_HasImageIndicators(t *testing.T) {
 		assert.False(t, hasImageIndicators([]byte(body)))
 	})
 }
+
+func TestStreamTokenCounter_CountsTokensFromSSE(t *testing.T) {
+	tracker := newLiveActivityTracker()
+	id := tracker.Start("llama-3")
+
+	counter := newStreamTokenCounter(tracker, id)
+
+	sse := []byte(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n" +
+			"data: [DONE]\n\n",
+	)
+
+	n, err := counter.Write(sse)
+	assert.NoError(t, err)
+	assert.Equal(t, len(sse), n)
+
+	rows := tracker.Snapshot()
+	assert.Len(t, rows, 1)
+	assert.NotNil(t, rows[0].GeneratedTokens)
+	// "Hello world" = 11 chars -> 11/4 = 2 tokens (integer division)
+	assert.Equal(t, 2, *rows[0].GeneratedTokens)
+}

@@ -58,8 +58,10 @@ type Process struct {
 	proxyLogger   *LogMonitor
 	memoryTracker *llamaCppMemoryTracker
 
-	promptProgressParser *promptProgressParser
-	promptProgressStop   context.CancelFunc
+	promptProgressParser  *promptProgressParser
+	promptProgressStop    context.CancelFunc
+	generationTokenParser *generationTokenParser
+	generationTokenStop   context.CancelFunc
 
 	healthCheckTimeout      int
 	healthCheckLoopInterval time.Duration
@@ -174,6 +176,18 @@ func (p *Process) TrackPromptProgress(tracker *liveActivityTracker) {
 	p.promptProgressStop = p.processLogger.OnLogData(func(data []byte) {
 		p.promptProgressParser.parseChunk(data, func(progress promptProcessingProgress) {
 			tracker.SetPromptProgress(progress.Model, progress.Progress)
+		})
+	})
+}
+
+func (p *Process) TrackGenerationTokens(tracker *liveActivityTracker) {
+	if tracker == nil || p.processLogger == nil {
+		return
+	}
+	p.generationTokenParser = newGenerationTokenParser(p.ID)
+	p.generationTokenStop = p.processLogger.OnLogData(func(data []byte) {
+		p.generationTokenParser.parseChunk(data, func(model string, nDecoded int) {
+			tracker.SetGeneratedTokens(model, nDecoded)
 		})
 	})
 }
@@ -503,6 +517,10 @@ func (p *Process) Shutdown() {
 	if p.promptProgressStop != nil {
 		p.promptProgressStop()
 		p.promptProgressStop = nil
+	}
+	if p.generationTokenStop != nil {
+		p.generationTokenStop()
+		p.generationTokenStop = nil
 	}
 
 	if !isValidTransition(p.CurrentState(), StateStopping) {

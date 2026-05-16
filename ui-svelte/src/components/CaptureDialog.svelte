@@ -1,6 +1,13 @@
 <script lang="ts">
   import { Download } from "lucide-svelte";
   import type { Metrics, ReqRespCapture } from "../lib/types";
+  import {
+    extractRequestChat,
+    extractResponseChat,
+    extractSSEChat,
+  } from "../lib/captureChat";
+  import type { SSEChat, CaptureChatMessage } from "../lib/captureChat";
+  import CaptureChatRender from "./CaptureChatRender.svelte";
 
   interface Props {
     capture: ReqRespCapture | null;
@@ -13,7 +20,7 @@
 
   let dialogEl: HTMLDialogElement | undefined = $state();
 
-  type BodyTab = "raw" | "pretty" | "chat";
+  type BodyTab = "raw" | "pretty" | "chat" | "render";
   let reqBodyTab: BodyTab = $state("pretty");
   let respBodyTab: BodyTab = $state("pretty");
   let copiedReq = $state(false);
@@ -99,29 +106,78 @@
     return `data:${mimeType};base64,${body}`;
   }
 
-  interface SSEChat {
-    reasoning: string;
-    content: string;
+  interface ExtractedImage {
+    src: string;
+    caption?: string;
   }
 
-  function parseSSEChat(text: string): SSEChat {
-    const result: SSEChat = { reasoning: "", content: "" };
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith("data: ")) continue;
-      const data = trimmed.slice(6);
-      if (data === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta;
-        if (delta?.content) result.content += delta.content;
-        if (delta?.reasoning_content) result.reasoning += delta.reasoning_content;
-      } catch {
-        // skip unparseable lines
+  function looksLikeBase64Image(str: string): boolean {
+    if (str.length < 50) return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(str)) return false;
+    // Common base64 image prefixes
+    if (str.startsWith("/9j/")) return true; // JPEG
+    if (str.startsWith("iVBORw")) return true; // PNG
+    if (str.startsWith("R0lGOD")) return true; // GIF
+    if (str.startsWith("UklGR")) return true; // WEBP
+    return false;
+  }
+
+  function dataUrlFromBase64(str: string): string | undefined {
+    if (str.startsWith("/9j/")) return `data:image/jpeg;base64,${str}`;
+    if (str.startsWith("iVBORw")) return `data:image/png;base64,${str}`;
+    if (str.startsWith("R0lGOD")) return `data:image/gif;base64,${str}`;
+    if (str.startsWith("UklGR")) return `data:image/webp;base64,${str}`;
+    return undefined;
+  }
+
+  function extractImagesFromJson(json: unknown): ExtractedImage[] {
+    const images: ExtractedImage[] = [];
+
+    function visit(value: unknown, path: string): void {
+      if (typeof value === "string") {
+        if (value.startsWith("data:image/")) {
+          images.push({ src: value, caption: path });
+        } else if (looksLikeBase64Image(value)) {
+          const dataUrl = dataUrlFromBase64(value);
+          if (dataUrl) {
+            images.push({ src: dataUrl, caption: path });
+          }
+        }
+      } else if (Array.isArray(value)) {
+        value.forEach((item, i) => visit(item, `${path}[${i}]`));
+      } else if (value && typeof value === "object") {
+        for (const [key, val] of Object.entries(value)) {
+          const currentPath = path ? `${path}.${key}` : key;
+          if (key === "b64_json" && typeof val === "string") {
+            images.push({ src: `data:image/png;base64,${val}`, caption: "b64_json" });
+          } else if (
+            key === "url" &&
+            typeof val === "string" &&
+            val.startsWith("data:image/")
+          ) {
+            images.push({ src: val, caption: currentPath });
+          } else if (
+            key === "image_url" &&
+            val &&
+            typeof val === "object" &&
+            "url" in val
+          ) {
+            const url = (val as Record<string, string>).url;
+            if (typeof url === "string" && url.startsWith("data:image/")) {
+              images.push({ src: url, caption: "image_url" });
+            }
+          } else {
+            visit(val, currentPath);
+          }
+        }
       }
     }
-    return result;
+
+    visit(json, "");
+    return images;
   }
+
+
 
   async function copyToClipboard(text: string, type: "req" | "resp") {
     try {
@@ -138,12 +194,30 @@
     }
   }
 
+  function getRequestCopyText(): string {
+    if (reqBodyTab === "render" && requestChat) {
+      return requestChat.messages.map((m) => `${m.role}: ${m.content}`).join("\n\n");
+    }
+    return displayedRequestBody;
+  }
+
   function getCopyText(): string {
     if (respBodyTab === "chat") {
       let text = "";
       if (sseChat.reasoning) text += sseChat.reasoning + "\n\n";
       text += sseChat.content;
       return text;
+    }
+    if (respBodyTab === "render") {
+      if (isSSE) {
+        let text = "";
+        if (sseChat.reasoning) text += sseChat.reasoning + "\n\n";
+        text += sseChat.content;
+        return text;
+      }
+      if (responseChat && "messages" in responseChat) {
+        return responseChat.messages.map((m) => `${m.role}: ${m.content}`).join("\n\n");
+      }
     }
     return displayedResponseBody;
   }
@@ -278,13 +352,73 @@
   let sseChat = $derived.by(() => {
     if (!isSSE || !responseBodyRaw)
       return { reasoning: "", content: "" } as SSEChat;
-    return parseSSEChat(responseBodyRaw);
+    return extractSSEChat(responseBodyRaw);
   });
 
   let displayedResponseBody = $derived.by(() => {
     if (respBodyTab === "pretty") return responseBodyPretty;
     return responseBodyRaw;
   });
+
+  let requestChat = $derived.by(() => {
+    if (!isRequestJson || !requestBodyRaw) return null;
+    return extractRequestChat(requestBodyRaw);
+  });
+
+  let responseChat = $derived.by(() => {
+    if (isSSE && responseBodyRaw) {
+      const chat = extractSSEChat(responseBodyRaw);
+      return chat.content || chat.reasoning ? (chat as SSEChat) : null;
+    }
+    if (isResponseJson && responseBodyRaw) {
+      return extractResponseChat(responseBodyRaw);
+    }
+    return null;
+  });
+
+  // Extract images from request/response JSON bodies
+  let requestImages = $derived.by(() => {
+    if (!isRequestJson || !requestBodyRaw) return [];
+    const json = parseJson(requestBodyRaw);
+    return json ? extractImagesFromJson(json) : [];
+  });
+
+  let responseImages = $derived.by(() => {
+    if (isResponseImage || !responseBodyRaw) return [];
+    const json = parseJson(responseBodyRaw);
+    return json ? extractImagesFromJson(json) : [];
+  });
+
+  // Combined chat for the unified "Chat Rendering" view
+  let combinedChatMessages = $derived.by((): CaptureChatMessage[] => {
+    const msgs: CaptureChatMessage[] = [];
+    if (requestChat) {
+      msgs.push(...requestChat.messages);
+    }
+    if (isSSE && (sseChat.content || sseChat.reasoning)) {
+      msgs.push({
+        role: "assistant",
+        content: sseChat.content,
+        reasoning_content: sseChat.reasoning || undefined,
+        imageUrls: responseImages.map((img) => img.src),
+      });
+    } else if (
+      responseChat &&
+      "messages" in responseChat &&
+      responseChat.messages.length > 0
+    ) {
+      const last = responseChat.messages[responseChat.messages.length - 1];
+      msgs.push({
+        role: last.role,
+        content: last.content,
+        reasoning_content: last.reasoning_content,
+        imageUrls: responseImages.map((img) => img.src),
+      });
+    }
+    return msgs;
+  });
+
+  let hasCombinedChat = $derived(combinedChatMessages.length > 0);
 </script>
 
 <dialog
@@ -307,6 +441,22 @@
       </div>
 
       <div class="overflow-y-auto flex-1 p-4 space-y-4">
+        <!-- Chat Rendering -->
+        {#if hasCombinedChat}
+          <details class="group" open>
+            <summary
+              class="cursor-pointer font-semibold text-sm uppercase tracking-wider text-primary hover:text-txtmain"
+            >
+              Chat Rendering
+            </summary>
+            <div
+              class="mt-2 bg-background rounded border border-card-border overflow-auto max-h-[60vh]"
+            >
+              <CaptureChatRender messages={combinedChatMessages} />
+            </div>
+          </details>
+        {/if}
+
         <!-- Request Headers -->
         <details class="group" open>
           <summary
@@ -348,6 +498,13 @@
                     class:tab-btn-active={reqBodyTab === "pretty"}
                     onclick={() => (reqBodyTab = "pretty")}>Pretty</button
                   >
+                  {#if requestChat}
+                    <button
+                      class="tab-btn"
+                      class:tab-btn-active={reqBodyTab === "render"}
+                      onclick={() => (reqBodyTab = "render")}>Render</button
+                    >
+                  {/if}
                   <button
                     class="tab-btn"
                     class:tab-btn-active={reqBodyTab === "raw"}
@@ -358,7 +515,7 @@
               <button
                 class="tab-btn"
                 onclick={() =>
-                  copyToClipboard(displayedRequestBody, "req")}
+                  copyToClipboard(getRequestCopyText(), "req")}
               >
                 {#if copiedReq}
                   Copied!
@@ -370,9 +527,34 @@
             <div
               class="mt-1 bg-background rounded border border-card-border overflow-auto max-h-96"
             >
-              <pre
-                class="p-3 text-sm font-mono whitespace-pre-wrap break-all">{displayedRequestBody}</pre>
+              {#if reqBodyTab === "render" && requestChat}
+                <CaptureChatRender messages={requestChat.messages} />
+              {:else}
+                <pre
+                  class="p-3 text-sm font-mono whitespace-pre-wrap break-all">{displayedRequestBody}</pre>
+              {/if}
             </div>
+            {#if requestImages.length > 0}
+              <div class="mt-3">
+                <div class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-2">
+                  Images ({requestImages.length})
+                </div>
+                <div class="flex flex-wrap gap-3">
+                  {#each requestImages as img, i}
+                    <div class="flex flex-col gap-1">
+                      <img
+                        src={img.src}
+                        alt="Request image {i + 1}"
+                        class="max-w-xs max-h-64 rounded border border-card-border object-contain"
+                      />
+                      {#if img.caption}
+                        <span class="text-xs text-txtsecondary">{img.caption}</span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
           {:else}
             <div
               class="mt-2 bg-background rounded border border-card-border overflow-auto max-h-96"
@@ -428,7 +610,26 @@
                 />
               </div>
             </div>
-          {:else if isSSE || isResponseText}
+          {:else if responseImages.length > 0}
+            <div class="mt-2">
+              <div class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-2">
+                Images ({responseImages.length})
+              </div>
+              <div class="flex flex-wrap gap-3">
+                {#each responseImages as img, i}
+                  <div class="flex flex-col gap-1">
+                    <img
+                      src={img.src}
+                      alt="Response image {i + 1}"
+                      class="max-w-xs max-h-64 rounded border border-card-border object-contain"
+                    />
+                    {#if img.caption}
+                      <span class="text-xs text-txtsecondary">{img.caption}</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            </div>
             <div class="mt-2 flex items-center justify-between">
               <div class="flex gap-1">
                 {#if isSSE}
@@ -436,6 +637,13 @@
                     class="tab-btn"
                     class:tab-btn-active={respBodyTab === "chat"}
                     onclick={() => (respBodyTab = "chat")}>Chat</button
+                  >
+                {/if}
+                {#if responseChat}
+                  <button
+                    class="tab-btn"
+                    class:tab-btn-active={respBodyTab === "render"}
+                    onclick={() => (respBodyTab = "render")}>Render</button
                   >
                 {/if}
                 {#if isResponseJson}
@@ -467,7 +675,104 @@
             <div
               class="mt-1 bg-background rounded border border-card-border overflow-auto max-h-96"
             >
-              {#if respBodyTab === "chat"}
+              {#if respBodyTab === "render"}
+                {#if isSSE}
+                  <CaptureChatRender reasoning={sseChat.reasoning} content={sseChat.content} />
+                {:else if responseChat && "messages" in responseChat}
+                  <CaptureChatRender messages={responseChat.messages} />
+                {:else}
+                  <pre class="p-3 text-sm font-mono whitespace-pre-wrap break-all">(empty)</pre>
+                {/if}
+              {:else if respBodyTab === "chat"}
+                <div class="p-3 text-sm space-y-3">
+                  {#if sseChat.reasoning}
+                    <div>
+                      <div
+                        class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-1"
+                      >
+                        Reasoning
+                      </div>
+                      <pre
+                        class="font-mono whitespace-pre-wrap break-all text-txtsecondary">{sseChat.reasoning}</pre>
+                    </div>
+                  {/if}
+                  {#if sseChat.content}
+                    <div>
+                      {#if sseChat.reasoning}
+                        <div
+                          class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-1"
+                        >
+                          Response
+                        </div>
+                      {/if}
+                      <pre
+                        class="font-mono whitespace-pre-wrap break-all">{sseChat.content}</pre>
+                    </div>
+                  {/if}
+                  {#if !sseChat.reasoning && !sseChat.content}
+                    <pre class="font-mono">(empty)</pre>
+                  {/if}
+                </div>
+              {:else}
+                <pre
+                  class="p-3 text-sm font-mono whitespace-pre-wrap break-all">{displayedResponseBody || "(empty)"}</pre>
+              {/if}
+            </div>
+          {:else if isSSE || isResponseText}
+            <div class="mt-2 flex items-center justify-between">
+              <div class="flex gap-1">
+                {#if isSSE}
+                  <button
+                    class="tab-btn"
+                    class:tab-btn-active={respBodyTab === "chat"}
+                    onclick={() => (respBodyTab = "chat")}>Chat</button
+                  >
+                {/if}
+                {#if responseChat}
+                  <button
+                    class="tab-btn"
+                    class:tab-btn-active={respBodyTab === "render"}
+                    onclick={() => (respBodyTab = "render")}>Render</button
+                  >
+                {/if}
+                {#if isResponseJson}
+                  <button
+                    class="tab-btn"
+                    class:tab-btn-active={respBodyTab === "pretty"}
+                    onclick={() => (respBodyTab = "pretty")}>Pretty</button
+                  >
+                {/if}
+                {#if isSSE || isResponseJson}
+                  <button
+                    class="tab-btn"
+                    class:tab-btn-active={respBodyTab === "raw"}
+                    onclick={() => (respBodyTab = "raw")}>Raw</button
+                  >
+                {/if}
+              </div>
+              <button
+                class="tab-btn"
+                onclick={() => copyToClipboard(getCopyText(), "resp")}
+              >
+                {#if copiedResp}
+                  Copied!
+                {:else}
+                  Copy
+                {/if}
+              </button>
+            </div>
+            <div
+              class="mt-1 bg-background rounded border border-card-border overflow-auto max-h-96"
+            >
+              {#if respBodyTab === "render"}
+                {#if isSSE}
+                  <CaptureChatRender reasoning={sseChat.reasoning} content={sseChat.content} />
+                {:else if responseChat && "messages" in responseChat}
+                  <CaptureChatRender messages={responseChat.messages} />
+                {:else}
+                  <pre class="p-3 text-sm font-mono whitespace-pre-wrap break-all">(empty)</pre>
+                {/if}
+              {:else if respBodyTab === "chat"}
                 <div class="p-3 text-sm space-y-3">
                   {#if sseChat.reasoning}
                     <div>

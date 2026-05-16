@@ -264,6 +264,7 @@
             <th class="px-6 py-3">ID</th>
             <th class="px-6 py-3">Time</th>
             <th class="px-6 py-3">Model</th>
+            <th class="px-6 py-3">Multimodal</th>
             <th class="px-6 py-3">
               Cached <Tooltip content="prompt tokens from cache" />
             </th>
@@ -290,9 +291,35 @@
               <td class="px-4 py-4">{row.kind === "completed" ? row.metric.id + 1 : "live"}</td>
               <td class="px-6 py-4">{formatRelativeTime(row.timestamp)}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? row.metric.model : row.live.model}</td>
+              <td class="px-6 py-4">
+                {#if row.kind === "completed"}
+                  <span class={row.metric.multimodal
+                    ? "inline-flex min-w-14 justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300"
+                    : "inline-flex min-w-14 justify-center rounded-full border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-700 dark:text-red-300"
+                  }>
+                    {row.metric.multimodal ? "true" : "false"}
+                  </span>
+                {:else}
+                  <span class="text-txtsecondary">-</span>
+                {/if}
+              </td>
               <td class="px-6 py-4">{row.kind === "completed" && row.metric.cache_tokens > 0 ? row.metric.cache_tokens.toLocaleString() : "-"}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? row.metric.new_input_tokens.toLocaleString() : "-"}</td>
-              <td class="px-6 py-4">{row.kind === "completed" ? row.metric.output_tokens.toLocaleString() : "-"}</td>
+              <td class="px-6 py-4">
+                {#if row.kind === "completed"}
+                  {row.metric.output_tokens.toLocaleString()}
+                {:else if row.live.generated_tokens !== undefined}
+                  <span class="inline-flex items-center gap-1">
+                    <span class="text-emerald-600 dark:text-emerald-400">~{row.live.generated_tokens.toLocaleString()}</span>
+                    <span class="relative flex h-2 w-2">
+                      <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+                      <span class="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
+                    </span>
+                  </span>
+                {:else}
+                  -
+                {/if}
+              </td>
               <td class="px-6 py-4"><span class={promptProgressClasses(row)}>{formatPromptProgress(row)}</span></td>
               <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.prompt_per_second) : "-"}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.tokens_per_second) : "-"}</td>

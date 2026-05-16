@@ -66,6 +66,7 @@ func NewProcessGroup(id string, config config.Config, proxyLogger *LogMonitor, u
 		process := NewProcess(modelID, pg.config.HealthCheckTimeout, modelConfig, processLogger, pg.proxyLogger)
 		if len(liveActivity) > 0 {
 			process.TrackPromptProgress(liveActivity[0])
+			process.TrackGenerationTokens(liveActivity[0])
 		}
 		pg.processes[modelID] = process
 	}

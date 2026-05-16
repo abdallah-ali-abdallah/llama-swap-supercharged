@@ -599,6 +599,11 @@ func (mp *metricsMonitor) wrapHandler(
 		defer mp.liveActivity.Finish(liveActivityID)
 	}
 
+	var extraWriters []io.Writer
+	if mp.liveActivity != nil && liveActivityID != "" {
+		extraWriters = append(extraWriters, newStreamTokenCounter(mp.liveActivity, liveActivityID))
+	}
+
 	// Capture request body and headers if captures enabled
 	var reqBody []byte
 	var reqHeaders map[string]string
@@ -623,7 +628,7 @@ func (mp *metricsMonitor) wrapHandler(
 		}
 	}
 
-	recorder := newBodyCopier(writer)
+	recorder := newBodyCopier(writer, extraWriters...)
 
 	// Filter Accept-Encoding to only include encodings we can decompress for metrics
 	if ae := request.Header.Get("Accept-Encoding"); ae != "" {
@@ -989,12 +994,14 @@ type responseBodyCopier struct {
 	start time.Time
 }
 
-func newBodyCopier(w gin.ResponseWriter) *responseBodyCopier {
+func newBodyCopier(w gin.ResponseWriter, extraWriters ...io.Writer) *responseBodyCopier {
 	bodyBuffer := &bytes.Buffer{}
+	writers := []io.Writer{w, bodyBuffer}
+	writers = append(writers, extraWriters...)
 	return &responseBodyCopier{
 		ResponseWriter: w,
 		body:           bodyBuffer,
-		tee:            io.MultiWriter(w, bodyBuffer),
+		tee:            io.MultiWriter(writers...),
 	}
 }
 
@@ -1017,6 +1024,80 @@ func (w *responseBodyCopier) Header() http.Header {
 
 func (w *responseBodyCopier) StartTime() time.Time {
 	return w.start
+}
+
+// streamTokenCounter counts generated characters from SSE streaming responses
+// to provide approximate live token counts.
+type streamTokenCounter struct {
+	mu           sync.Mutex
+	partial      string
+	charCount    int
+	lastReported int
+	tracker      *liveActivityTracker
+	activityID   string
+}
+
+func newStreamTokenCounter(tracker *liveActivityTracker, activityID string) *streamTokenCounter {
+	return &streamTokenCounter{
+		tracker:    tracker,
+		activityID: activityID,
+	}
+}
+
+func (c *streamTokenCounter) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	buffer := c.partial + string(p)
+	lines := strings.Split(buffer, "\n")
+	c.partial = lines[len(lines)-1]
+
+	for _, line := range lines[:len(lines)-1] {
+		c.parseLine(strings.TrimSpace(line))
+	}
+
+	return len(p), nil
+}
+
+func (c *streamTokenCounter) parseLine(line string) {
+	if !strings.HasPrefix(line, "data:") {
+		return
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if data == "" || data == "[DONE]" {
+		return
+	}
+
+	if !strings.Contains(line, `"content"`) && !strings.Contains(line, `"text"`) && !strings.Contains(line, `"response"`) {
+		return
+	}
+
+	if !gjson.Valid(data) {
+		return
+	}
+
+	parsed := gjson.Parse(data)
+	content := ""
+
+	// OpenAI-compatible streaming format
+	if v := parsed.Get("choices.0.delta.content"); v.Exists() {
+		content = v.String()
+	} else if v := parsed.Get("choices.0.text"); v.Exists() {
+		content = v.String()
+	} else if v := parsed.Get("content"); v.Exists() {
+		content = v.String()
+	} else if v := parsed.Get("response"); v.Exists() {
+		content = v.String()
+	}
+
+	if content != "" {
+		c.charCount += len(content)
+		tokens := c.charCount / 4
+		if tokens > c.lastReported {
+			c.lastReported = tokens
+			c.tracker.UpdateGeneratedTokens(c.activityID, tokens)
+		}
+	}
 }
 
 // sensitiveHeaders lists headers that should be redacted in captures

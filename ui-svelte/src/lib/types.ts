@@ -59,6 +59,7 @@ export interface Metrics {
   prompt_ms: number;
   predicted_ms: number;
   has_capture: boolean;
+  multimodal: boolean;
   draft_acceptance_rate: number;
   accepted_drafts: number;
   generated_drafts: number;
@@ -91,6 +92,7 @@ export interface LiveActivityRow {
   pp_progress?: number;
   pp_exact: boolean;
   updated_at?: string;
+  generated_tokens?: number;
 }
 
 export interface APIEventEnvelope {

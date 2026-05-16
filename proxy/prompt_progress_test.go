@@ -122,3 +122,98 @@ func TestProxyManager_LiveActivityMarksOverlappingSameModelProgressUnknown(t *te
 		require.Nil(t, row.PPProgress)
 	}
 }
+
+func TestLiveActivityTracker_UpdateGeneratedTokens(t *testing.T) {
+	tracker := newLiveActivityTracker()
+	id := tracker.Start("test-model")
+
+	tracker.UpdateGeneratedTokens(id, 10)
+	rows := tracker.Snapshot()
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].GeneratedTokens)
+	require.Equal(t, 10, *rows[0].GeneratedTokens)
+
+	// Same value should not change state
+	tracker.UpdateGeneratedTokens(id, 10)
+	rows2 := tracker.Snapshot()
+	require.Equal(t, *rows[0].GeneratedTokens, *rows2[0].GeneratedTokens)
+
+	tracker.UpdateGeneratedTokens(id, 25)
+	rows = tracker.Snapshot()
+	require.Equal(t, 25, *rows[0].GeneratedTokens)
+
+	tracker.Finish(id)
+	require.Empty(t, tracker.Snapshot())
+}
+
+func TestGenerationTokenParser_ParseLine(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+
+	n, ok := parser.parseLine(
+		"slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  44.95 t/s",
+	)
+
+	require.True(t, ok)
+	require.Equal(t, 100, n)
+}
+
+func TestGenerationTokenParser_ParseLine_WithPrefix(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+
+	n, ok := parser.parseLine(
+		"0.17.821.721 I slot print_timing: id  0 | task 0 | n_decoded =    228, tg =  43.58 t/s",
+	)
+
+	require.True(t, ok)
+	require.Equal(t, 228, n)
+}
+
+func TestGenerationTokenParser_IgnoresPromptProcessingLine(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+
+	_, ok := parser.parseLine(
+		"slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   2709, progress = 1.00, t =   4.82 s / 561.87 tokens per second",
+	)
+
+	require.False(t, ok)
+}
+
+func TestGenerationTokenParser_IgnoresMalformedLines(t *testing.T) {
+	parser := newGenerationTokenParser("test-model")
+
+	_, ok := parser.parseLine("slot update_slots: id  0 | task 0 | prompt processing progress, n_tokens = 25904")
+	require.False(t, ok)
+}
+
+func TestLiveActivityTracker_SetGeneratedTokens(t *testing.T) {
+	tracker := newLiveActivityTracker()
+	tracker.Start("test-model")
+
+	tracker.SetGeneratedTokens("test-model", 42)
+	rows := tracker.Snapshot()
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].GeneratedTokens)
+	require.Equal(t, 42, *rows[0].GeneratedTokens)
+
+	// Duplicate value should not emit
+	tracker.SetGeneratedTokens("test-model", 42)
+	rows2 := tracker.Snapshot()
+	require.Equal(t, rows[0].UpdatedAt, rows2[0].UpdatedAt)
+
+	tracker.SetGeneratedTokens("test-model", 100)
+	rows = tracker.Snapshot()
+	require.Equal(t, 100, *rows[0].GeneratedTokens)
+}
+
+func TestLiveActivityTracker_SetGeneratedTokens_AmbiguousWhenMultiple(t *testing.T) {
+	tracker := newLiveActivityTracker()
+	tracker.Start("test-model")
+	tracker.Start("test-model")
+
+	tracker.SetGeneratedTokens("test-model", 50)
+	rows := tracker.Snapshot()
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		require.Nil(t, row.GeneratedTokens)
+	}
+}

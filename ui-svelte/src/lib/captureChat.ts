@@ -18,6 +18,15 @@ export interface SSEChat {
   content: string;
 }
 
+/** Convert literal escape sequences like \\n → actual newline */
+export function unescapeLiteral(text: string): string {
+  return text
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\r/g, "\r")
+    .replace(/\\\\/g, "\\");
+}
+
 export function extractRequestChat(body: string): ExtractedChat | null {
   try {
     const parsed = JSON.parse(body);
@@ -32,7 +41,7 @@ export function extractRequestChat(body: string): ExtractedChat | null {
       const content: string | ContentPart[] = msg.content ?? "";
       messages.push({
         role,
-        content: getTextContent(content),
+        content: unescapeLiteral(getTextContent(content)),
         imageUrls: getImageUrls(content),
       });
     }
@@ -57,9 +66,13 @@ export function extractResponseChat(body: string): ExtractedChat | null {
       messages: [
         {
           role: message.role || "assistant",
-          content: typeof content === "string" ? content : JSON.stringify(content),
+          content: unescapeLiteral(
+            typeof content === "string" ? content : JSON.stringify(content),
+          ),
           reasoning_content:
-            typeof reasoning_content === "string" ? reasoning_content : undefined,
+            typeof reasoning_content === "string"
+              ? unescapeLiteral(reasoning_content)
+              : undefined,
         },
       ],
     };
@@ -84,5 +97,8 @@ export function extractSSEChat(body: string): SSEChat {
       // skip unparseable lines
     }
   }
-  return result;
+  return {
+    reasoning: unescapeLiteral(result.reasoning),
+    content: unescapeLiteral(result.content),
+  };
 }

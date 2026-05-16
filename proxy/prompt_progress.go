@@ -134,15 +134,70 @@ func clampPromptProgress(progress float64) float64 {
 	return progress
 }
 
+type generationTokenParser struct {
+	mu          sync.Mutex
+	model       string
+	partialLine string
+	re          *regexp.Regexp
+}
+
+func newGenerationTokenParser(model string) *generationTokenParser {
+	return &generationTokenParser{
+		model: model,
+		re: regexp.MustCompile(
+			`slot print_timing:.*n_decoded\s*=\s*(\d+)`,
+		),
+	}
+}
+
+func (p *generationTokenParser) parseChunk(data []byte, callback func(model string, nDecoded int)) bool {
+	p.mu.Lock()
+	buffer := p.partialLine + string(data)
+	parts := strings.Split(buffer, "\n")
+	p.partialLine = parts[len(parts)-1]
+	p.mu.Unlock()
+
+	found := false
+	for _, part := range parts[:len(parts)-1] {
+		if n, ok := p.parseLine(part); ok {
+			callback(p.model, n)
+			found = true
+		}
+	}
+
+	return found
+}
+
+func (p *generationTokenParser) parseLine(line string) (int, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.Contains(line, "slot print_timing:") {
+		return 0, false
+	}
+	if !strings.Contains(line, "n_decoded") {
+		return 0, false
+	}
+
+	matches := p.re.FindStringSubmatch(line)
+	if len(matches) == 2 {
+		n, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
+}
+
 type LiveActivityRow struct {
-	ID         string     `json:"id"`
-	Sequence   int64      `json:"sequence"`
-	Timestamp  time.Time  `json:"timestamp"`
-	Model      string     `json:"model"`
-	Status     string     `json:"status"`
-	PPProgress *float64   `json:"pp_progress,omitempty"`
-	PPExact    bool       `json:"pp_exact"`
-	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
+	ID              string     `json:"id"`
+	Sequence        int64      `json:"sequence"`
+	Timestamp       time.Time  `json:"timestamp"`
+	Model           string     `json:"model"`
+	Status          string     `json:"status"`
+	PPProgress      *float64   `json:"pp_progress,omitempty"`
+	PPExact         bool       `json:"pp_exact"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+	GeneratedTokens *int       `json:"generated_tokens,omitempty"`
 }
 
 type liveActivityTracker struct {
@@ -251,6 +306,64 @@ func (t *liveActivityTracker) SetPromptProgress(model string, progress float64) 
 			row.UpdatedAt = &now
 			t.rows[id] = row
 		}
+	}
+	rows := t.snapshotLocked()
+	t.mu.Unlock()
+
+	event.Emit(LiveActivityEvent{Rows: rows})
+}
+
+func (t *liveActivityTracker) UpdateGeneratedTokens(id string, tokens int) {
+	if t == nil || id == "" {
+		return
+	}
+
+	t.mu.Lock()
+	row, ok := t.rows[id]
+	if !ok {
+		t.mu.Unlock()
+		return
+	}
+
+	if row.GeneratedTokens != nil && *row.GeneratedTokens == tokens {
+		t.mu.Unlock()
+		return
+	}
+
+	now := time.Now()
+	row.GeneratedTokens = &tokens
+	row.UpdatedAt = &now
+	t.rows[id] = row
+	rows := t.snapshotLocked()
+	t.mu.Unlock()
+
+	event.Emit(LiveActivityEvent{Rows: rows})
+}
+
+func (t *liveActivityTracker) SetGeneratedTokens(model string, tokens int) {
+	if t == nil {
+		return
+	}
+
+	t.mu.Lock()
+	active := t.activeByModel[model]
+	// Only update when there is exactly one active request for this model,
+	// otherwise we cannot reliably attribute the tokens to a specific request.
+	if len(active) != 1 {
+		t.mu.Unlock()
+		return
+	}
+
+	now := time.Now()
+	for id := range active {
+		row := t.rows[id]
+		if row.GeneratedTokens != nil && *row.GeneratedTokens == tokens {
+			t.mu.Unlock()
+			return
+		}
+		row.GeneratedTokens = &tokens
+		row.UpdatedAt = &now
+		t.rows[id] = row
 	}
 	rows := t.snapshotLocked()
 	t.mu.Unlock()

@@ -16,6 +16,7 @@ function metric(overrides: Partial<Metrics>): Metrics {
     prompt_ms: 0,
     predicted_ms: 0,
     has_capture: false,
+    multimodal: false,
     draft_acceptance_rate: 0,
     accepted_drafts: 0,
     generated_drafts: 0,
