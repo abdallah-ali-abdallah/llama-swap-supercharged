@@ -212,11 +212,22 @@
       if (isSSE) {
         let text = "";
         if (sseChat.reasoning) text += sseChat.reasoning + "\n\n";
+        if (sseChat.toolCalls.length > 0) {
+          for (const tc of sseChat.toolCalls) {
+            text += `[tool:${tc.function.name}] ${tc.function.arguments}\n\n`;
+          }
+        }
         text += sseChat.content;
         return text;
       }
       if (responseChat && "messages" in responseChat) {
-        return responseChat.messages.map((m) => `${m.role}: ${m.content}`).join("\n\n");
+        return responseChat.messages.map((m) => {
+          let line = `${m.role}: ${m.content}`;
+          if (m.toolCalls && m.toolCalls.length > 0) {
+            line += "\n" + m.toolCalls.map(tc => `[tool:${tc.function.name}] ${tc.function.arguments}`).join("\n");
+          }
+          return line;
+        }).join("\n\n");
       }
     }
     return displayedResponseBody;
@@ -351,7 +362,7 @@
 
   let sseChat = $derived.by(() => {
     if (!isSSE || !responseBodyRaw)
-      return { reasoning: "", content: "" } as SSEChat;
+      return { reasoning: "", content: "", toolCalls: [] } as SSEChat;
     return extractSSEChat(responseBodyRaw);
   });
 
@@ -368,7 +379,7 @@
   let responseChat = $derived.by(() => {
     if (isSSE && responseBodyRaw) {
       const chat = extractSSEChat(responseBodyRaw);
-      return chat.content || chat.reasoning ? (chat as SSEChat) : null;
+      return chat.content || chat.reasoning || chat.toolCalls.length > 0 ? (chat as SSEChat) : null;
     }
     if (isResponseJson && responseBodyRaw) {
       return extractResponseChat(responseBodyRaw);
@@ -395,12 +406,13 @@
     if (requestChat) {
       msgs.push(...requestChat.messages);
     }
-    if (isSSE && (sseChat.content || sseChat.reasoning)) {
+    if (isSSE && (sseChat.content || sseChat.reasoning || sseChat.toolCalls.length > 0)) {
       msgs.push({
         role: "assistant",
         content: sseChat.content,
         reasoning_content: sseChat.reasoning || undefined,
         imageUrls: responseImages.map((img) => img.src),
+        toolCalls: sseChat.toolCalls,
       });
     } else if (
       responseChat &&
@@ -413,6 +425,7 @@
         content: last.content,
         reasoning_content: last.reasoning_content,
         imageUrls: responseImages.map((img) => img.src),
+        toolCalls: last.toolCalls,
       });
     }
     return msgs;
@@ -677,7 +690,7 @@
             >
               {#if respBodyTab === "render"}
                 {#if isSSE}
-                  <CaptureChatRender reasoning={sseChat.reasoning} content={sseChat.content} />
+                  <CaptureChatRender reasoning={sseChat.reasoning} content={sseChat.content} toolCalls={sseChat.toolCalls} />
                 {:else if responseChat && "messages" in responseChat}
                   <CaptureChatRender messages={responseChat.messages} />
                 {:else}
@@ -696,9 +709,22 @@
                         class="font-mono whitespace-pre-wrap break-all text-txtsecondary">{sseChat.reasoning}</pre>
                     </div>
                   {/if}
+                  {#if sseChat.toolCalls.length > 0}
+                    <div>
+                      <div
+                        class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-1"
+                      >
+                        Tool Calls
+                      </div>
+                      {#each sseChat.toolCalls as tc}
+                        <pre
+                          class="font-mono whitespace-pre-wrap break-all mb-2">[{tc.function.name}] {tc.function.arguments}</pre>
+                      {/each}
+                    </div>
+                  {/if}
                   {#if sseChat.content}
                     <div>
-                      {#if sseChat.reasoning}
+                      {#if sseChat.reasoning || sseChat.toolCalls.length > 0}
                         <div
                           class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-1"
                         >
@@ -709,7 +735,7 @@
                         class="font-mono whitespace-pre-wrap break-all">{sseChat.content}</pre>
                     </div>
                   {/if}
-                  {#if !sseChat.reasoning && !sseChat.content}
+                  {#if !sseChat.reasoning && !sseChat.content && sseChat.toolCalls.length === 0}
                     <pre class="font-mono">(empty)</pre>
                   {/if}
                 </div>
@@ -766,7 +792,7 @@
             >
               {#if respBodyTab === "render"}
                 {#if isSSE}
-                  <CaptureChatRender reasoning={sseChat.reasoning} content={sseChat.content} />
+                  <CaptureChatRender reasoning={sseChat.reasoning} content={sseChat.content} toolCalls={sseChat.toolCalls} />
                 {:else if responseChat && "messages" in responseChat}
                   <CaptureChatRender messages={responseChat.messages} />
                 {:else}
@@ -785,9 +811,22 @@
                         class="font-mono whitespace-pre-wrap break-all text-txtsecondary">{sseChat.reasoning}</pre>
                     </div>
                   {/if}
+                  {#if sseChat.toolCalls.length > 0}
+                    <div>
+                      <div
+                        class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-1"
+                      >
+                        Tool Calls
+                      </div>
+                      {#each sseChat.toolCalls as tc}
+                        <pre
+                          class="font-mono whitespace-pre-wrap break-all mb-2">[{tc.function.name}] {tc.function.arguments}</pre>
+                      {/each}
+                    </div>
+                  {/if}
                   {#if sseChat.content}
                     <div>
-                      {#if sseChat.reasoning}
+                      {#if sseChat.reasoning || sseChat.toolCalls.length > 0}
                         <div
                           class="text-xs font-semibold uppercase tracking-wider text-txtsecondary mb-1"
                         >
@@ -798,7 +837,7 @@
                         class="font-mono whitespace-pre-wrap break-all">{sseChat.content}</pre>
                     </div>
                   {/if}
-                  {#if !sseChat.reasoning && !sseChat.content}
+                  {#if !sseChat.reasoning && !sseChat.content && sseChat.toolCalls.length === 0}
                     <pre class="font-mono">(empty)</pre>
                   {/if}
                 </div>

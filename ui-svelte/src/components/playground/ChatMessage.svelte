@@ -6,7 +6,7 @@
   import type { ContentPart } from "../../lib/types";
 
   interface Props {
-    role: "user" | "assistant" | "system";
+    role: "user" | "assistant" | "system" | "tool";
     content: string | ContentPart[];
     reasoning_content?: string;
     reasoningTimeMs?: number;

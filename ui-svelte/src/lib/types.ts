@@ -1,217 +1,247 @@
 export type ConnectionState = "connected" | "connecting" | "disconnected";
 
-export type ModelStatus = "ready" | "starting" | "stopping" | "stopped" | "shutdown" | "unknown";
+export type ModelStatus =
+	| "ready"
+	| "starting"
+	| "stopping"
+	| "stopped"
+	| "shutdown"
+	| "unknown";
 
 export interface Model {
-  id: string;
-  state: ModelStatus;
-  name: string;
-  description: string;
-  unlisted: boolean;
-  peerID: string;
-  aliases?: string[];
-  memory?: ModelMemorySnapshot;
+	id: string;
+	state: ModelStatus;
+	name: string;
+	description: string;
+	unlisted: boolean;
+	peerID: string;
+	aliases?: string[];
+	memory?: ModelMemorySnapshot;
 }
 
 export interface ModelMemorySnapshot {
-  source: "llamacpp_logs";
-  updated_at: string;
-  device_total_bytes: number;
-  host_total_bytes: number;
-  total_tracked_bytes: number;
-  devices?: ModelMemoryComponent[];
-  host?: ModelMemoryComponent[];
-  unknown?: ModelMemoryComponent[];
+	source: "llamacpp_logs";
+	updated_at: string;
+	device_total_bytes: number;
+	host_total_bytes: number;
+	total_tracked_bytes: number;
+	devices?: ModelMemoryComponent[];
+	host?: ModelMemoryComponent[];
+	unknown?: ModelMemoryComponent[];
 }
 
 export interface ModelMemoryComponent {
-  name: string;
-  model_bytes?: number;
-  kv_bytes?: number;
-  compute_bytes?: number;
-  output_bytes?: number;
-  tracked_bytes: number;
-  device_capacity_bytes?: number;
-  device_free_bytes?: number;
-  unaccounted_bytes?: number;
+	name: string;
+	model_bytes?: number;
+	kv_bytes?: number;
+	compute_bytes?: number;
+	output_bytes?: number;
+	tracked_bytes: number;
+	device_capacity_bytes?: number;
+	device_free_bytes?: number;
+	unaccounted_bytes?: number;
 }
 
 export interface ModelConfiguration {
-  modelID: string;
-  cmd: string;
-  proxy: string;
-  env?: string[];
-  checkEndpoint: string;
-  ttl: number;
-  yaml: string;
+	modelID: string;
+	cmd: string;
+	proxy: string;
+	env?: string[];
+	checkEndpoint: string;
+	ttl: number;
+	yaml: string;
 }
 
 export interface Metrics {
-  id: number;
-  timestamp: string;
-  model: string;
-  cache_tokens: number;
-  new_input_tokens: number;
-  output_tokens: number;
-  prompt_per_second: number;
-  tokens_per_second: number;
-  duration_ms: number;
-  prompt_ms: number;
-  predicted_ms: number;
-  has_capture: boolean;
-  multimodal: boolean;
-  draft_acceptance_rate: number;
-  accepted_drafts: number;
-  generated_drafts: number;
+	id: number;
+	timestamp: string;
+	model: string;
+	cache_tokens: number;
+	new_input_tokens: number;
+	output_tokens: number;
+	prompt_per_second: number;
+	tokens_per_second: number;
+	duration_ms: number;
+	prompt_ms: number;
+	predicted_ms: number;
+	has_capture: boolean;
+	multimodal: boolean;
+	draft_acceptance_rate: number;
+	accepted_drafts: number;
+	generated_drafts: number;
 }
 
 export interface ReqRespCapture {
-  id: number;
-  req_path: string;
-  req_headers: Record<string, string>;
-  req_body: string; // base64 encoded bytes
-  resp_headers: Record<string, string>;
-  resp_body: string; // base64 encoded bytes
+	id: number;
+	req_path: string;
+	req_headers: Record<string, string>;
+	req_body: string; // base64 encoded bytes
+	resp_headers: Record<string, string>;
+	resp_body: string; // base64 encoded bytes
 }
 
 export interface LogData {
-  source: "upstream" | "proxy";
-  data: string;
+	source: "upstream" | "proxy";
+	data: string;
 }
 
 export interface InFlightStats {
-  total: number;
+	total: number;
 }
 
 export interface LiveActivityRow {
-  id: string;
-  sequence: number;
-  timestamp: string;
-  model: string;
-  status: "in_progress";
-  pp_progress?: number;
-  pp_exact: boolean;
-  updated_at?: string;
-  generated_tokens?: number;
+	id: string;
+	sequence: number;
+	timestamp: string;
+	model: string;
+	status: "in_progress";
+	pp_progress?: number;
+	pp_exact: boolean;
+	updated_at?: string;
+	generated_tokens?: number;
 }
 
 export interface APIEventEnvelope {
-  type: "modelStatus" | "logData" | "metrics" | "inflight" | "activityLive";
-  data: string;
+	type: "modelStatus" | "logData" | "metrics" | "inflight" | "activityLive";
+	data: string;
 }
 
 export interface VersionInfo {
-  build_date: string;
-  commit: string;
-  version: string;
+	build_date: string;
+	commit: string;
+	version: string;
 }
 
 export type ScreenWidth = "xs" | "sm" | "md" | "lg" | "xl" | "2xl";
 
 export type TextContentPart = {
-  type: "text";
-  text: string;
+	type: "text";
+	text: string;
 };
 
 export type ImageContentPart = {
-  type: "image_url";
-  image_url: { url: string };
+	type: "image_url";
+	image_url: { url: string };
 };
 
 export type ContentPart = TextContentPart | ImageContentPart;
 
+export interface ToolCall {
+	id: string;
+	type: "function";
+	function: {
+		name: string;
+		arguments: string;
+	};
+}
+
+export interface ToolFunction {
+	name: string;
+	description?: string;
+	parameters?: Record<string, unknown>;
+}
+
+export interface ToolDefinition {
+	type: "function";
+	function: ToolFunction;
+}
+
 export interface ChatMessage {
-  role: "user" | "assistant" | "system";
-  content: string | ContentPart[];
-  reasoning_content?: string;
-  reasoningTimeMs?: number;
+	role: "user" | "assistant" | "system" | "tool";
+	content: string | ContentPart[];
+	reasoning_content?: string;
+	reasoningTimeMs?: number;
+	tool_calls?: ToolCall[];
+	tool_call_id?: string;
 }
 
 export function getTextContent(content: string | ContentPart[]): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  const textParts = content.filter((part): part is TextContentPart => part.type === "text");
-  return textParts.map((part) => part.text).join("\n");
+	if (typeof content === "string") {
+		return content;
+	}
+	const textParts = content.filter(
+		(part): part is TextContentPart => part.type === "text",
+	);
+	return textParts.map((part) => part.text).join("\n");
 }
 
 export function getImageUrls(content: string | ContentPart[]): string[] {
-  if (typeof content === "string") {
-    return [];
-  }
-  return content
-    .filter((part): part is ImageContentPart => part.type === "image_url")
-    .map((part) => part.image_url.url);
+	if (typeof content === "string") {
+		return [];
+	}
+	return content
+		.filter((part): part is ImageContentPart => part.type === "image_url")
+		.map((part) => part.image_url.url);
 }
 
 export interface ChatCompletionRequest {
-  model: string;
-  messages: ChatMessage[];
-  stream: boolean;
-  temperature?: number;
-  max_tokens?: number;
+	model: string;
+	messages: ChatMessage[];
+	stream: boolean;
+	temperature?: number;
+	max_tokens?: number;
 }
 
 export interface ImageGenerationRequest {
-  model: string;
-  prompt: string;
-  n?: number;
-  size?: string;
+	model: string;
+	prompt: string;
+	n?: number;
+	size?: string;
 }
 
 export interface ImageGenerationResponse {
-  created: number;
-  data: Array<{
-    url?: string;
-    b64_json?: string;
-  }>;
+	created: number;
+	data: Array<{
+		url?: string;
+		b64_json?: string;
+	}>;
 }
 
 // SDAPI types (stable-diffusion.cpp)
 export type ImageApiMode = "openai" | "sdapi";
 
 export interface SdApiLora {
-  name: string;
-  path: string;
+	name: string;
+	path: string;
 }
 
 export interface SdApiLoraRef {
-  path: string;
-  multiplier: number;
+	path: string;
+	multiplier: number;
 }
 
 export interface SdApiTxt2ImgRequest {
-  model?: string;
-  prompt: string;
-  negative_prompt?: string;
-  width?: number;
-  height?: number;
-  steps?: number;
-  cfg_scale?: number;
-  seed?: number;
-  batch_size?: number;
-  sampler_name?: string;
-  scheduler?: string;
-  lora?: SdApiLoraRef[];
+	model?: string;
+	prompt: string;
+	negative_prompt?: string;
+	width?: number;
+	height?: number;
+	steps?: number;
+	cfg_scale?: number;
+	seed?: number;
+	batch_size?: number;
+	sampler_name?: string;
+	scheduler?: string;
+	lora?: SdApiLoraRef[];
 }
 
 export interface SdApiResponse {
-  images: string[];
-  parameters: Record<string, unknown>;
-  info: string;
+	images: string[];
+	parameters: Record<string, unknown>;
+	info: string;
 }
 
 export interface AudioTranscriptionRequest {
-  file: File;
-  model: string;
+	file: File;
+	model: string;
 }
 
 export interface AudioTranscriptionResponse {
-  text: string;
+	text: string;
 }
 
 export interface SpeechGenerationRequest {
-  model: string;
-  input: string;
-  voice: string;
+	model: string;
+	input: string;
+	voice: string;
 }

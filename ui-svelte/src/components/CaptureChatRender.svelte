@@ -1,18 +1,22 @@
 <script lang="ts">
   import { renderMarkdown } from "../lib/markdown";
   import type { CaptureChatMessage } from "../lib/captureChat";
-  import { Brain, ChevronDown, ChevronRight } from "lucide-svelte";
+  import { tryFormatJson } from "../lib/captureChat";
+  import type { ToolCall } from "../lib/types";
+  import { Brain, ChevronDown, ChevronRight, Wrench, Database } from "lucide-svelte";
 
   interface Props {
     messages?: CaptureChatMessage[];
     reasoning?: string;
     content?: string;
+    toolCalls?: ToolCall[];
   }
 
-  let { messages = [], reasoning = "", content = "" }: Props = $props();
+  let { messages = [], reasoning = "", content = "", toolCalls = [] }: Props = $props();
 
   let reasoningOpen = $state<Record<number, boolean>>({});
   let sseReasoningOpen = $state(false);
+  let toolOpen = $state<Record<string, boolean>>({});
 
   const COPY_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
   const CHECK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
@@ -64,6 +68,10 @@
   function toggleReasoning(index: number) {
     reasoningOpen[index] = !reasoningOpen[index];
   }
+
+  function toggleTool(callId: string) {
+    toolOpen[callId] = !toolOpen[callId];
+  }
 </script>
 
 <div class="flex flex-col gap-3 p-3">
@@ -105,11 +113,61 @@
         >
           {message.content || "(empty)"}
         </div>
+      {:else if message.role === "tool"}
+        <div class="flex justify-start">
+          <div
+            class="max-w-[85%] w-full bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/30 rounded-lg px-4 py-2"
+          >
+            <div class="flex items-center gap-2 mb-2 text-emerald-700 dark:text-emerald-300 text-sm font-medium">
+              <Database class="w-4 h-4" />
+              <span>Tool Result</span>
+              {#if message.toolCallId}
+                <span class="text-xs opacity-70 font-mono truncate max-w-[200px]">{message.toolCallId}</span>
+              {/if}
+            </div>
+            {#if message.content}
+              <div class="prose prose-sm dark:prose-invert max-w-none" use:codeBlockCopy>
+                {@html renderMarkdown("```json\n" + tryFormatJson(message.content) + "\n```")}
+              </div>
+            {:else}
+              <div class="italic text-txtsecondary text-sm">(empty)</div>
+            {/if}
+          </div>
+        </div>
       {:else}
+        <!-- assistant -->
         <div class="flex justify-start">
           <div
             class="max-w-[85%] bg-surface border border-gray-200 dark:border-white/10 rounded-lg px-4 py-2 w-full"
           >
+            {#if message.toolCalls && message.toolCalls.length > 0}
+              <div class="space-y-2 mb-2">
+                {#each message.toolCalls as tc, tci}
+                  <div class="border border-amber-200 dark:border-amber-700/30 rounded overflow-hidden">
+                    <button
+                      class="w-full flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors text-sm"
+                      onclick={() => toggleTool(tc.id || String(tci))}
+                    >
+                      {#if toolOpen[tc.id || String(tci)]}
+                        <ChevronDown class="w-4 h-4" />
+                      {:else}
+                        <ChevronRight class="w-4 h-4" />
+                      {/if}
+                      <Wrench class="w-4 h-4" />
+                      <span class="font-medium">{tc.function.name}</span>
+                      {#if tc.id}
+                        <span class="text-xs opacity-70 font-mono truncate max-w-[160px]">{tc.id}</span>
+                      {/if}
+                    </button>
+                    {#if toolOpen[tc.id || String(tci)]}
+                      <div class="px-3 py-2 bg-amber-50/50 dark:bg-amber-900/10 text-sm whitespace-pre-wrap font-mono">
+                        {tryFormatJson(tc.function.arguments)}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
             {#if message.reasoning_content}
               <div
                 class="mb-3 border border-gray-200 dark:border-white/10 rounded overflow-hidden"
@@ -145,18 +203,46 @@
               >
                 {@html renderMarkdown(message.content)}
               </div>
-            {:else}
+            {:else if !message.toolCalls || message.toolCalls.length === 0}
               <div class="italic text-txtsecondary">(empty)</div>
             {/if}
           </div>
         </div>
       {/if}
     {/each}
-  {:else if reasoning || content}
+  {:else if reasoning || content || toolCalls.length > 0}
     <div class="flex justify-start">
       <div
         class="max-w-[85%] bg-surface border border-gray-200 dark:border-white/10 rounded-lg px-4 py-2 w-full"
       >
+        {#if toolCalls.length > 0}
+          <div class="space-y-2 mb-2">
+            {#each toolCalls as tc, tci}
+              <div class="border border-amber-200 dark:border-amber-700/30 rounded overflow-hidden">
+                <button
+                  class="w-full flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors text-sm"
+                  onclick={() => toggleTool(tc.id || String(tci))}
+                >
+                  {#if toolOpen[tc.id || String(tci)]}
+                    <ChevronDown class="w-4 h-4" />
+                  {:else}
+                    <ChevronRight class="w-4 h-4" />
+                  {/if}
+                  <Wrench class="w-4 h-4" />
+                  <span class="font-medium">{tc.function.name}</span>
+                  {#if tc.id}
+                    <span class="text-xs opacity-70 font-mono truncate max-w-[160px]">{tc.id}</span>
+                  {/if}
+                </button>
+                {#if toolOpen[tc.id || String(tci)]}
+                  <div class="px-3 py-2 bg-amber-50/50 dark:bg-amber-900/10 text-sm whitespace-pre-wrap font-mono">
+                    {tryFormatJson(tc.function.arguments)}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if reasoning}
           <div
             class="mb-3 border border-gray-200 dark:border-white/10 rounded overflow-hidden"
@@ -192,7 +278,7 @@
           >
             {@html renderMarkdown(content)}
           </div>
-        {:else}
+        {:else if !toolCalls || toolCalls.length === 0}
           <div class="italic text-txtsecondary">(empty)</div>
         {/if}
       </div>
