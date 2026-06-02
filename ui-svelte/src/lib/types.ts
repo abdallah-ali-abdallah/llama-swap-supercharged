@@ -95,10 +95,19 @@ export interface LiveActivityRow {
 	timestamp: string;
 	model: string;
 	status: "in_progress";
+	slot_id?: number;
+	task_id?: number;
 	pp_progress?: number;
 	pp_exact: boolean;
+	pp_speed?: number;
 	updated_at?: string;
 	generated_tokens?: number;
+	tg_speed?: number;
+}
+
+export interface TokenStreamChunk {
+	kind: "content" | "reasoning";
+	text: string;
 }
 
 export interface APIEventEnvelope {

@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { RefreshCw } from "lucide-svelte";
-  import { activityLive, metrics, getCapture, listMetrics } from "../stores/api";
+  import { RefreshCw, Eye, X } from "lucide-svelte";
+  import { activityLive, metrics, getCapture, listMetrics, cancelActivity } from "../stores/api";
   import Tooltip from "../components/Tooltip.svelte";
   import CaptureDialog from "../components/CaptureDialog.svelte";
+  import LiveStreamDialog from "../components/LiveStreamDialog.svelte";
   import type { LiveActivityRow, Metrics, ReqRespCapture } from "../lib/types";
 
   const nf = new Intl.NumberFormat();
@@ -107,6 +108,19 @@
   let selectedMetric = $state<Metrics | null>(null);
   let dialogOpen = $state(false);
   let loadingCaptureId = $state<number | null>(null);
+
+  let selectedLiveRow = $state<LiveActivityRow | null>(null);
+  let liveDialogOpen = $state(false);
+
+  function viewLiveStream(row: LiveActivityRow) {
+    selectedLiveRow = row;
+    liveDialogOpen = true;
+  }
+
+  function closeLiveDialog() {
+    liveDialogOpen = false;
+    selectedLiveRow = null;
+  }
 
   function dateTimeToISO(value: string): string | undefined {
     if (!value) return undefined;
@@ -283,11 +297,18 @@
             <th class="px-6 py-3">Draft Rate</th>
             <th class="px-6 py-3">Drafted Tokens</th>
             <th class="px-6 py-3">Capture</th>
+            <th class="px-6 py-3">Actions</th>
           </tr>
         </thead>
         <tbody class="divide-y">
           {#each activityRows as row (row.key)}
-            <tr class="whitespace-nowrap text-sm border-gray-200 dark:border-white/10">
+            <tr
+              class={row.kind === "live"
+                ? "whitespace-nowrap text-sm border-gray-200 dark:border-white/10 cursor-pointer hover:bg-[#5794f2]/5 transition-colors"
+                : "whitespace-nowrap text-sm border-gray-200 dark:border-white/10"
+              }
+              onclick={() => row.kind === "live" && viewLiveStream(row.live)}
+            >
               <td class="px-4 py-4">{row.kind === "completed" ? row.metric.id + 1 : "live"}</td>
               <td class="px-6 py-4">{formatRelativeTime(row.timestamp)}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? row.metric.model : row.live.model}</td>
@@ -311,6 +332,9 @@
                 {:else if row.live.generated_tokens !== undefined}
                   <span class="inline-flex items-center gap-1">
                     <span class="text-emerald-600 dark:text-emerald-400">~{row.live.generated_tokens.toLocaleString()}</span>
+                    {#if row.live.tg_speed !== undefined}
+                      <span class="text-emerald-600/70 dark:text-emerald-400/70 text-xs">@ {row.live.tg_speed.toFixed(2)} t/s</span>
+                    {/if}
                     <span class="relative flex h-2 w-2">
                       <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
                       <span class="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
@@ -320,9 +344,9 @@
                   -
                 {/if}
               </td>
-              <td class="px-6 py-4"><span class={promptProgressClasses(row)}>{formatPromptProgress(row)}</span></td>
-              <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.prompt_per_second) : "-"}</td>
-              <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.tokens_per_second) : "-"}</td>
+              <td class="px-6 py-4"><span class={promptProgressClasses(row)}>{formatPromptProgress(row)}</span>{#if row.kind === "live" && row.live.pp_speed !== undefined}<span class="ml-1 text-xs text-[#174a8b] dark:text-[#cfe2ff]">{row.live.pp_speed.toFixed(2)} t/s</span>{/if}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.prompt_per_second) : row.kind === "live" && row.live.pp_speed !== undefined ? formatSpeed(row.live.pp_speed) : "-"}</td>
+              <td class="px-6 py-4">{row.kind === "completed" ? formatSpeed(row.metric.tokens_per_second) : row.kind === "live" && row.live.tg_speed !== undefined ? formatSpeed(row.live.tg_speed) : "-"}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? formatDurationSeconds(row.metric.prompt_ms) : "-"}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? formatDurationSeconds(row.metric.predicted_ms) : "-"}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? formatDuration(row.metric.duration_ms) : "-"}</td>
@@ -343,13 +367,35 @@
                 {/if}
               </td>
               <td class="px-6 py-4">
-                {#if row.kind === "completed" && row.metric.has_capture}
+                {#if row.kind === "live"}
+                  <button
+                    onclick={(e) => { e.stopPropagation(); viewLiveStream(row.live); }}
+                    class="btn btn--sm inline-flex items-center gap-1"
+                  >
+                    <Eye size={14} />
+                    Stream
+                  </button>
+                {:else if row.kind === "completed" && row.metric.has_capture}
                   <button
                     onclick={() => viewCapture(row.metric)}
                     disabled={loadingCaptureId === row.metric.id}
                     class="btn btn--sm"
                   >
                     {loadingCaptureId === row.metric.id ? "..." : "View"}
+                  </button>
+                {:else}
+                  <span class="text-txtsecondary">-</span>
+                {/if}
+              </td>
+              <td class="px-6 py-4">
+                {#if row.kind === "live"}
+                  <button
+                    onclick={() => cancelActivity(row.live.id)}
+                    title="Cancel request"
+                    class="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+                  >
+                    <X size={13} />
+                    Cancel
                   </button>
                 {:else}
                   <span class="text-txtsecondary">-</span>
@@ -364,3 +410,4 @@
 </div>
 
 <CaptureDialog capture={selectedCapture} metric={selectedMetric} open={dialogOpen} onclose={closeDialog} />
+<LiveStreamDialog row={selectedLiveRow} open={liveDialogOpen} onclose={closeLiveDialog} />

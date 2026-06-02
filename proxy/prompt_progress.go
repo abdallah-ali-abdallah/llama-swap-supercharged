@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ type promptProcessingProgress struct {
 	Tokens      int
 	BatchTokens int
 	Progress    float64
+	Speed       float64
 	ParsedAt    time.Time
 }
 
@@ -37,7 +39,7 @@ func newPromptProgressParser(model string) *promptProgressParser {
 			`slot update_slots:\s+id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|.*prompt processing progress,\s+n_tokens\s*=\s*(\d+),\s*batch\.n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)`,
 		),
 		reProgress2: regexp.MustCompile(
-			`slot print_timing:\s+id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|.*prompt processing,\s+n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)`,
+			`slot print_timing:\s+id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|.*prompt processing,\s+n_tokens\s*=\s*(\d+),\s*progress\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?:,\s*t\s*=\s*[\d\.]+\s*s\s*/\s*([\d\.]+)\s*tokens per second)?`,
 		),
 	}
 }
@@ -102,13 +104,19 @@ func (p *promptProgressParser) parseLine(line string, parsedAt time.Time) (promp
 	}
 
 	matches = p.reProgress2.FindStringSubmatch(line)
-	if len(matches) == 5 {
+	if len(matches) >= 5 {
 		slotID, err1 := strconv.Atoi(matches[1])
 		taskID, err2 := strconv.Atoi(matches[2])
 		tokens, err3 := strconv.Atoi(matches[3])
 		progress, err4 := strconv.ParseFloat(matches[4], 64)
 		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
 			return promptProcessingProgress{}, false
+		}
+		var speed float64
+		if len(matches) >= 6 && matches[5] != "" {
+			if s, err := strconv.ParseFloat(matches[5], 64); err == nil {
+				speed = s
+			}
 		}
 		return promptProcessingProgress{
 			Model:       p.model,
@@ -117,6 +125,7 @@ func (p *promptProgressParser) parseLine(line string, parsedAt time.Time) (promp
 			Tokens:      tokens,
 			BatchTokens: tokens,
 			Progress:    clampPromptProgress(progress),
+			Speed:       speed,
 			ParsedAt:    parsedAt,
 		}, true
 	}
@@ -134,6 +143,14 @@ func clampPromptProgress(progress float64) float64 {
 	return progress
 }
 
+type generationProgress struct {
+	Model   string
+	SlotID  int
+	TaskID  int
+	Decoded int
+	Speed   float64
+}
+
 type generationTokenParser struct {
 	mu          sync.Mutex
 	model       string
@@ -145,12 +162,12 @@ func newGenerationTokenParser(model string) *generationTokenParser {
 	return &generationTokenParser{
 		model: model,
 		re: regexp.MustCompile(
-			`slot print_timing:.*n_decoded\s*=\s*(\d+)`,
+			`slot print_timing:\s+id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|.*n_decoded\s*=\s*(\d+)(?:,\s*tg\s*=\s*([\d\.]+)\s*t/s)?`,
 		),
 	}
 }
 
-func (p *generationTokenParser) parseChunk(data []byte, callback func(model string, nDecoded int)) bool {
+func (p *generationTokenParser) parseChunk(data []byte, callback func(generationProgress)) bool {
 	p.mu.Lock()
 	buffer := p.partialLine + string(data)
 	parts := strings.Split(buffer, "\n")
@@ -159,8 +176,8 @@ func (p *generationTokenParser) parseChunk(data []byte, callback func(model stri
 
 	found := false
 	for _, part := range parts[:len(parts)-1] {
-		if n, ok := p.parseLine(part); ok {
-			callback(p.model, n)
+		if progress, ok := p.parseLine(part); ok {
+			callback(progress)
 			found = true
 		}
 	}
@@ -168,24 +185,38 @@ func (p *generationTokenParser) parseChunk(data []byte, callback func(model stri
 	return found
 }
 
-func (p *generationTokenParser) parseLine(line string) (int, bool) {
+func (p *generationTokenParser) parseLine(line string) (generationProgress, bool) {
 	line = strings.TrimSpace(line)
 	if !strings.Contains(line, "slot print_timing:") {
-		return 0, false
+		return generationProgress{}, false
 	}
 	if !strings.Contains(line, "n_decoded") {
-		return 0, false
+		return generationProgress{}, false
 	}
 
 	matches := p.re.FindStringSubmatch(line)
-	if len(matches) == 2 {
-		n, err := strconv.Atoi(matches[1])
-		if err != nil {
-			return 0, false
+	if len(matches) >= 4 {
+		slotID, err1 := strconv.Atoi(matches[1])
+		taskID, err2 := strconv.Atoi(matches[2])
+		n, err3 := strconv.Atoi(matches[3])
+		if err1 != nil || err2 != nil || err3 != nil {
+			return generationProgress{}, false
 		}
-		return n, true
+		var speed float64
+		if len(matches) >= 5 && matches[4] != "" {
+			if s, err := strconv.ParseFloat(matches[4], 64); err == nil {
+				speed = s
+			}
+		}
+		return generationProgress{
+			Model:   p.model,
+			SlotID:  slotID,
+			TaskID:  taskID,
+			Decoded: n,
+			Speed:   speed,
+		}, true
 	}
-	return 0, false
+	return generationProgress{}, false
 }
 
 type LiveActivityRow struct {
@@ -194,24 +225,117 @@ type LiveActivityRow struct {
 	Timestamp       time.Time  `json:"timestamp"`
 	Model           string     `json:"model"`
 	Status          string     `json:"status"`
+	SlotID          *int       `json:"slot_id,omitempty"`
+	TaskID          *int       `json:"task_id,omitempty"`
 	PPProgress      *float64   `json:"pp_progress,omitempty"`
 	PPExact         bool       `json:"pp_exact"`
+	PPSpeed         *float64   `json:"pp_speed,omitempty"`
 	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 	GeneratedTokens *int       `json:"generated_tokens,omitempty"`
-	generationExact bool       // true if GeneratedTokens came from exact log count
+	TGSpeed         *float64   `json:"tg_speed,omitempty"`
+	generationExact bool
+}
+
+// tokenStreamChunk represents a single piece of streamed content
+type tokenStreamChunk struct {
+	Kind string `json:"kind"` // "content" or "reasoning"
+	Text string `json:"text"`
+}
+
+// tokenStream accumulates token text for a live request and broadcasts new chunks
+type tokenStream struct {
+	mu        sync.Mutex
+	chunks    []tokenStreamChunk
+	content   strings.Builder
+	reasoning strings.Builder
+	closed    bool
+	waiters   []chan tokenStreamChunk
+}
+
+func (ts *tokenStream) append(kind, text string) {
+	ts.mu.Lock()
+	chunk := tokenStreamChunk{Kind: kind, Text: text}
+	ts.chunks = append(ts.chunks, chunk)
+	switch kind {
+	case "content":
+		ts.content.WriteString(text)
+	case "reasoning":
+		ts.reasoning.WriteString(text)
+	}
+	waiters := make([]chan tokenStreamChunk, len(ts.waiters))
+	copy(waiters, ts.waiters)
+	ts.mu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- chunk:
+		default:
+		}
+	}
+}
+
+func (ts *tokenStream) close() {
+	ts.mu.Lock()
+	ts.closed = true
+	waiters := make([]chan tokenStreamChunk, len(ts.waiters))
+	copy(waiters, ts.waiters)
+	ts.waiters = nil
+	ts.mu.Unlock()
+
+	for _, ch := range waiters {
+		close(ch)
+	}
+}
+
+func (ts *tokenStream) snapshot() ([]tokenStreamChunk, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	result := make([]tokenStreamChunk, len(ts.chunks))
+	copy(result, ts.chunks)
+	return result, ts.closed
+}
+
+func (ts *tokenStream) addWaiter() chan tokenStreamChunk {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ch := make(chan tokenStreamChunk, 16)
+	if ts.closed {
+		close(ch)
+		return ch
+	}
+	ts.waiters = append(ts.waiters, ch)
+	return ch
+}
+
+func (ts *tokenStream) removeWaiter(ch chan tokenStreamChunk) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	for i, w := range ts.waiters {
+		if w == ch {
+			ts.waiters = append(ts.waiters[:i], ts.waiters[i+1:]...)
+			close(ch)
+			break
+		}
+	}
 }
 
 type liveActivityTracker struct {
-	mu            sync.RWMutex
-	nextSequence  int64
-	rows          map[string]LiveActivityRow
-	activeByModel map[string]map[string]struct{}
+	mu             sync.RWMutex
+	nextSequence   int64
+	rows           map[string]LiveActivityRow
+	activeByModel  map[string]map[string]struct{}
+	pendingByModel map[string][]string
+	slotTaskToRow  map[string]string
+	tokenStreams   map[string]*tokenStream
 }
 
 func newLiveActivityTracker() *liveActivityTracker {
 	return &liveActivityTracker{
-		rows:          make(map[string]LiveActivityRow),
-		activeByModel: make(map[string]map[string]struct{}),
+		rows:           make(map[string]LiveActivityRow),
+		activeByModel:  make(map[string]map[string]struct{}),
+		pendingByModel: make(map[string][]string),
+		slotTaskToRow:  make(map[string]string),
+		tokenStreams:   make(map[string]*tokenStream),
 	}
 }
 
@@ -236,16 +360,8 @@ func (t *liveActivityTracker) Start(model string) string {
 		t.activeByModel[model] = make(map[string]struct{})
 	}
 	t.activeByModel[model][id] = struct{}{}
-	if len(t.activeByModel[model]) > 1 {
-		now := time.Now()
-		for activeID := range t.activeByModel[model] {
-			activeRow := t.rows[activeID]
-			activeRow.PPProgress = nil
-			activeRow.PPExact = false
-			activeRow.UpdatedAt = &now
-			t.rows[activeID] = activeRow
-		}
-	}
+	t.pendingByModel[model] = append(t.pendingByModel[model], id)
+	t.tokenStreams[id] = &tokenStream{}
 	rows := t.snapshotLocked()
 	t.mu.Unlock()
 
@@ -271,43 +387,88 @@ func (t *liveActivityTracker) Finish(id string) {
 			delete(t.activeByModel, row.Model)
 		}
 	}
+	// Remove from pending queue.
+	pending := t.pendingByModel[row.Model]
+	for i, pid := range pending {
+		if pid == id {
+			t.pendingByModel[row.Model] = append(pending[:i], pending[i+1:]...)
+			break
+		}
+	}
+	// Remove from slot/task mappings.
+	for key, rid := range t.slotTaskToRow {
+		if rid == id {
+			delete(t.slotTaskToRow, key)
+		}
+	}
+	// Close and schedule cleanup of token stream.
+	if ts, ok := t.tokenStreams[id]; ok {
+		ts.close()
+		go func(streamID string) {
+			time.Sleep(30 * time.Second)
+			t.mu.Lock()
+			delete(t.tokenStreams, streamID)
+			t.mu.Unlock()
+		}(id)
+	}
 	rows := t.snapshotLocked()
 	t.mu.Unlock()
 
 	event.Emit(LiveActivityEvent{Rows: rows})
 }
 
-func (t *liveActivityTracker) SetPromptProgress(model string, progress float64) {
+func (t *liveActivityTracker) assignSlotTask(model string, slotID, taskID int) string {
+	if t == nil {
+		return ""
+	}
+
+	key := fmt.Sprintf("%s/%d/%d", model, slotID, taskID)
+
+	// Already mapped?
+	if rowID, ok := t.slotTaskToRow[key]; ok {
+		return rowID
+	}
+
+	// Pop oldest pending row for this model.
+	pending := t.pendingByModel[model]
+	if len(pending) == 0 {
+		return ""
+	}
+	rowID := pending[0]
+	t.pendingByModel[model] = pending[1:]
+	t.slotTaskToRow[key] = rowID
+
+	// Update row with slot/task info.
+	row := t.rows[rowID]
+	row.SlotID = &slotID
+	row.TaskID = &taskID
+	t.rows[rowID] = row
+
+	return rowID
+}
+
+func (t *liveActivityTracker) SetPromptProgress(progress promptProcessingProgress) {
 	if t == nil {
 		return
 	}
 
 	t.mu.Lock()
-	active := t.activeByModel[model]
-	if len(active) == 0 {
+	rowID := t.assignSlotTask(progress.Model, progress.SlotID, progress.TaskID)
+	if rowID == "" {
 		t.mu.Unlock()
 		return
 	}
 
+	row := t.rows[rowID]
 	now := time.Now()
-	if len(active) == 1 {
-		for id := range active {
-			row := t.rows[id]
-			progress = clampPromptProgress(progress)
-			row.PPProgress = &progress
-			row.PPExact = true
-			row.UpdatedAt = &now
-			t.rows[id] = row
-		}
-	} else {
-		for id := range active {
-			row := t.rows[id]
-			row.PPProgress = nil
-			row.PPExact = false
-			row.UpdatedAt = &now
-			t.rows[id] = row
-		}
+	progressVal := clampPromptProgress(progress.Progress)
+	row.PPProgress = &progressVal
+	row.PPExact = true
+	if progress.Speed > 0 {
+		row.PPSpeed = &progress.Speed
 	}
+	row.UpdatedAt = &now
+	t.rows[rowID] = row
 	rows := t.snapshotLocked()
 	t.mu.Unlock()
 
@@ -347,36 +508,58 @@ func (t *liveActivityTracker) UpdateGeneratedTokens(id string, tokens int) {
 	event.Emit(LiveActivityEvent{Rows: rows})
 }
 
-func (t *liveActivityTracker) SetGeneratedTokens(model string, tokens int) {
+func (t *liveActivityTracker) SetGeneratedTokens(progress generationProgress) {
 	if t == nil {
 		return
 	}
 
 	t.mu.Lock()
-	active := t.activeByModel[model]
-	// Only update when there is exactly one active request for this model,
-	// otherwise we cannot reliably attribute the tokens to a specific request.
-	if len(active) != 1 {
+	rowID := t.assignSlotTask(progress.Model, progress.SlotID, progress.TaskID)
+	if rowID == "" {
+		t.mu.Unlock()
+		return
+	}
+
+	row := t.rows[rowID]
+	if row.GeneratedTokens != nil && *row.GeneratedTokens == progress.Decoded {
 		t.mu.Unlock()
 		return
 	}
 
 	now := time.Now()
-	for id := range active {
-		row := t.rows[id]
-		if row.GeneratedTokens != nil && *row.GeneratedTokens == tokens {
-			t.mu.Unlock()
-			return
-		}
-		row.GeneratedTokens = &tokens
-		row.generationExact = true
-		row.UpdatedAt = &now
-		t.rows[id] = row
+	row.GeneratedTokens = &progress.Decoded
+	row.generationExact = true
+	if progress.Speed > 0 {
+		row.TGSpeed = &progress.Speed
 	}
+	row.UpdatedAt = &now
+	t.rows[rowID] = row
 	rows := t.snapshotLocked()
 	t.mu.Unlock()
 
 	event.Emit(LiveActivityEvent{Rows: rows})
+}
+
+func (t *liveActivityTracker) AppendToken(id, kind, text string) {
+	if t == nil || id == "" || text == "" {
+		return
+	}
+	t.mu.RLock()
+	ts, ok := t.tokenStreams[id]
+	t.mu.RUnlock()
+	if !ok {
+		return
+	}
+	ts.append(kind, text)
+}
+
+func (t *liveActivityTracker) GetTokenStream(id string) *tokenStream {
+	if t == nil {
+		return nil
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.tokenStreams[id]
 }
 
 func (t *liveActivityTracker) Snapshot() []LiveActivityRow {

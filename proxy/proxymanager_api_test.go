@@ -352,7 +352,7 @@ func TestProxyManager_LiveActivitySSEInitialSnapshot(t *testing.T) {
 	pm := newExcludeMetricsAPIProxyManager(t, nil)
 	pm.liveActivity = newLiveActivityTracker()
 	pm.liveActivity.Start("visible")
-	pm.liveActivity.SetPromptProgress("visible", 0.5)
+	pm.liveActivity.SetPromptProgress(promptProcessingProgress{Model: "visible", SlotID: 0, TaskID: 0, Progress: 0.5})
 
 	reqCtx, cancel := context.WithCancel(context.Background())
 	w := httptest.NewRecorder()

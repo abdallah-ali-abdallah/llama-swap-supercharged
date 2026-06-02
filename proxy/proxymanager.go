@@ -279,6 +279,7 @@ func New(proxyConfig config.Config) *ProxyManager {
 	liveActivity := newLiveActivityTracker()
 	metricsMonitor := newMetricsMonitor(proxyLogger, maxMetrics, proxyConfig.CaptureBuffer, upstreamLogger, metricsStore)
 	metricsMonitor.liveActivity = liveActivity
+	metricsMonitor.cancelRegistry = newRequestCancelRegistry()
 
 	pm := &ProxyManager{
 		config:    proxyConfig,

@@ -175,7 +175,7 @@ func (p *Process) TrackPromptProgress(tracker *liveActivityTracker) {
 	p.promptProgressParser = newPromptProgressParser(p.ID)
 	p.promptProgressStop = p.processLogger.OnLogData(func(data []byte) {
 		p.promptProgressParser.parseChunk(data, func(progress promptProcessingProgress) {
-			tracker.SetPromptProgress(progress.Model, progress.Progress)
+			tracker.SetPromptProgress(progress)
 		})
 	})
 }
@@ -186,8 +186,8 @@ func (p *Process) TrackGenerationTokens(tracker *liveActivityTracker) {
 	}
 	p.generationTokenParser = newGenerationTokenParser(p.ID)
 	p.generationTokenStop = p.processLogger.OnLogData(func(data []byte) {
-		p.generationTokenParser.parseChunk(data, func(model string, nDecoded int) {
-			tracker.SetGeneratedTokens(model, nDecoded)
+		p.generationTokenParser.parseChunk(data, func(progress generationProgress) {
+			tracker.SetGeneratedTokens(progress)
 		})
 	})
 }

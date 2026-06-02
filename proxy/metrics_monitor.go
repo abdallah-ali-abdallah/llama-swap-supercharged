@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -122,6 +123,8 @@ type metricsMonitor struct {
 	specParserStop func()
 
 	liveActivity *liveActivityTracker
+
+	cancelRegistry *requestCancelRegistry
 }
 
 // newMetricsMonitor creates a new metricsMonitor. captureBufferMB is the
@@ -238,6 +241,14 @@ func (mp *metricsMonitor) close() {
 	if store != nil {
 		store.close()
 	}
+}
+
+//lint:ignore U1000 used via cancel registry when available
+func (mp *metricsMonitor) cancelRequest(id string) bool {
+	if mp.cancelRegistry == nil {
+		return false
+	}
+	return mp.cancelRegistry.Cancel(id)
 }
 
 // addCapture adds a new capture to the buffer with size-based eviction.
@@ -597,6 +608,14 @@ func (mp *metricsMonitor) wrapHandler(
 	if mp.liveActivity != nil {
 		liveActivityID = mp.liveActivity.Start(modelID)
 		defer mp.liveActivity.Finish(liveActivityID)
+	}
+
+	// Register a cancellable context so the UI can abort this request.
+	if mp.cancelRegistry != nil && liveActivityID != "" {
+		cancelCtx, cancelFunc := context.WithCancel(request.Context())
+		mp.cancelRegistry.Register(liveActivityID, cancelFunc)
+		request = request.WithContext(cancelCtx)
+		defer mp.cancelRegistry.Deregister(liveActivityID)
 	}
 
 	var extraWriters []io.Writer
@@ -1068,7 +1087,7 @@ func (c *streamTokenCounter) parseLine(line string) {
 		return
 	}
 
-	if !strings.Contains(line, `"content"`) && !strings.Contains(line, `"text"`) && !strings.Contains(line, `"response"`) {
+	if !strings.Contains(line, `"content"`) && !strings.Contains(line, `"text"`) && !strings.Contains(line, `"response"`) && !strings.Contains(line, `"reasoning_content"`) {
 		return
 	}
 
@@ -1077,10 +1096,15 @@ func (c *streamTokenCounter) parseLine(line string) {
 	}
 
 	parsed := gjson.Parse(data)
-	content := ""
 
+	delta := parsed.Get("choices.0.delta")
+	if !delta.Exists() {
+		delta = parsed
+	}
+
+	content := ""
 	// OpenAI-compatible streaming format
-	if v := parsed.Get("choices.0.delta.content"); v.Exists() {
+	if v := delta.Get("content"); v.Exists() {
 		content = v.String()
 	} else if v := parsed.Get("choices.0.text"); v.Exists() {
 		content = v.String()
@@ -1091,11 +1115,19 @@ func (c *streamTokenCounter) parseLine(line string) {
 	}
 
 	if content != "" {
+		c.tracker.AppendToken(c.activityID, "content", content)
 		c.charCount += len(content)
 		tokens := c.charCount / 4
 		if tokens > c.lastReported {
 			c.lastReported = tokens
 			c.tracker.UpdateGeneratedTokens(c.activityID, tokens)
+		}
+	}
+
+	// Capture reasoning content from streaming deltas
+	if v := delta.Get("reasoning_content"); v.Exists() {
+		if reasoning := v.String(); reasoning != "" {
+			c.tracker.AppendToken(c.activityID, "reasoning", reasoning)
 		}
 	}
 }

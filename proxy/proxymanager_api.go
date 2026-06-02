@@ -52,6 +52,7 @@ func addApiHandlers(pm *ProxyManager) {
 		apiGroup.PUT("/settings/persistence", pm.apiUpdatePersistenceSettings)
 		apiGroup.GET("/version", pm.apiGetVersion)
 		apiGroup.GET("/captures/:id", pm.apiGetCapture)
+		apiGroup.GET("/activity/live/:id/stream", pm.apiLiveTokenStream)
 	}
 }
 
@@ -655,4 +656,91 @@ func (pm *ProxyManager) apiGetCapture(c *gin.Context) {
 		}
 		c.Data(http.StatusOK, "application/json", decompressed)
 	}
+}
+
+func (pm *ProxyManager) apiLiveTokenStream(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+
+	if pm.liveActivity == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "live activity tracking unavailable"})
+		return
+	}
+
+	ts := pm.liveActivity.GetTokenStream(id)
+	if ts == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "stream not found"})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	// Send accumulated chunks immediately
+	chunks, closed := ts.snapshot()
+	for _, chunk := range chunks {
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			continue
+		}
+		c.SSEvent("message", string(data))
+		c.Writer.Flush()
+	}
+
+	if closed {
+		c.SSEvent("message", `{"done":true}`)
+		c.Writer.Flush()
+		return
+	}
+
+	// Stream new chunks as they arrive
+	waiter := ts.addWaiter()
+	defer ts.removeWaiter(waiter)
+
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-pm.shutdownCtx.Done():
+			return
+		case chunk, ok := <-waiter:
+			if !ok {
+				c.SSEvent("message", `{"done":true}`)
+				c.Writer.Flush()
+				return
+			}
+			data, err := json.Marshal(chunk)
+			if err != nil {
+				continue
+			}
+			c.SSEvent("message", string(data))
+			c.Writer.Flush()
+		}
+	}
+}
+
+//lint:ignore U1000 reserved for future request cancellation feature
+func (pm *ProxyManager) apiCancelActivity(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+
+	if pm.metricsMonitor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metrics monitor unavailable"})
+		return
+	}
+
+	if pm.metricsMonitor.cancelRequest(id) {
+		c.JSON(http.StatusOK, gin.H{"cancelled": true})
+		return
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "request not found or already completed"})
 }
