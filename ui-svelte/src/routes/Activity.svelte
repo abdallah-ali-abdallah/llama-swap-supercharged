@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { RefreshCw, Eye, X } from "lucide-svelte";
-  import { activityLive, metrics, getCapture, listMetrics, cancelActivity } from "../stores/api";
+  import { RefreshCw, Eye } from "lucide-svelte";
+  import { activityLive, metrics, getCapture, listMetrics } from "../stores/api";
   import Tooltip from "../components/Tooltip.svelte";
   import CaptureDialog from "../components/CaptureDialog.svelte";
   import LiveStreamDialog from "../components/LiveStreamDialog.svelte";
@@ -297,7 +297,6 @@
             <th class="px-6 py-3">Draft Rate</th>
             <th class="px-6 py-3">Drafted Tokens</th>
             <th class="px-6 py-3">Capture</th>
-            <th class="px-6 py-3">Actions</th>
           </tr>
         </thead>
         <tbody class="divide-y">
@@ -376,20 +375,6 @@
                     class="btn btn--sm"
                   >
                     {loadingCaptureId === row.metric.id ? "..." : "View"}
-                  </button>
-                {:else}
-                  <span class="text-txtsecondary">-</span>
-                {/if}
-              </td>
-              <td class="px-6 py-4">
-                {#if row.kind === "live"}
-                  <button
-                    onclick={() => cancelActivity(row.live.id)}
-                    title="Cancel request"
-                    class="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
-                  >
-                    <X size={13} />
-                    Cancel
                   </button>
                 {:else}
                   <span class="text-txtsecondary">-</span>

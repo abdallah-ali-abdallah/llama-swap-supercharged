@@ -381,6 +381,26 @@ func TestProxyManager_LiveActivitySSEInitialSnapshot(t *testing.T) {
 	require.InDelta(t, 0.5, *rows[0].PPProgress, 0.000001)
 }
 
+func TestProxyManager_CancelActivityRoute(t *testing.T) {
+	logger := NewLogMonitorWriter(io.Discard)
+	monitor := newMetricsMonitor(logger, 100, 0, nil)
+	monitor.cancelRegistry = newRequestCancelRegistry()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	monitor.cancelRegistry.Register("live-1", cancel)
+
+	pm := newExcludeMetricsAPIProxyManager(t, monitor)
+	pm.ginEngine = gin.New()
+	addApiHandlers(pm)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/activity/live-1/cancel", nil)
+	pm.ginEngine.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+}
+
 func newExcludeMetricsAPIProxyManagerWithStore(t *testing.T) *ProxyManager {
 	t.Helper()
 	logger := NewLogMonitorWriter(io.Discard)

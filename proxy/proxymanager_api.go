@@ -53,6 +53,7 @@ func addApiHandlers(pm *ProxyManager) {
 		apiGroup.GET("/version", pm.apiGetVersion)
 		apiGroup.GET("/captures/:id", pm.apiGetCapture)
 		apiGroup.GET("/activity/live/:id/stream", pm.apiLiveTokenStream)
+		apiGroup.POST("/activity/:id/cancel", pm.apiCancelActivity)
 	}
 }
 
@@ -724,7 +725,6 @@ func (pm *ProxyManager) apiLiveTokenStream(c *gin.Context) {
 	}
 }
 
-//lint:ignore U1000 reserved for future request cancellation feature
 func (pm *ProxyManager) apiCancelActivity(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {

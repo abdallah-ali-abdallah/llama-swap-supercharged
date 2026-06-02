@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { X } from "lucide-svelte";
-  import { streamLiveTokens, activityLive } from "../stores/api";
+  import { X, Octagon } from "lucide-svelte";
+  import { streamLiveTokens, activityLive, cancelActivity } from "../stores/api";
   import type { LiveActivityRow, TokenStreamChunk } from "../lib/types";
   import CaptureChatRender from "./CaptureChatRender.svelte";
 
@@ -19,6 +19,7 @@
   let connected = $state(false);
   let disconnectFn: (() => void) | null = null;
   let contentDiv: HTMLDivElement | undefined = $state();
+  let cancelling = $state(false);
 
   // Keep row data fresh from the live store while dialog is open
   let liveRow = $derived.by(() => {
@@ -44,6 +45,7 @@
     reasoning = "";
     done = false;
     connected = false;
+    cancelling = false;
 
     if (open && row) {
       connected = true;
@@ -76,8 +78,8 @@
 
   // Auto-scroll to bottom when content updates
   $effect(() => {
-    // dependency on content and reasoning
-    const _ = content + reasoning;
+    content;
+    reasoning;
     if (contentDiv) {
       requestAnimationFrame(() => {
         if (contentDiv) {
@@ -89,6 +91,18 @@
 
   function handleClose() {
     onclose();
+  }
+
+  async function handleCancel() {
+    if (!row || cancelling) return;
+    cancelling = true;
+    const ok = await cancelActivity(row.id);
+    cancelling = false;
+    if (ok) {
+      connected = false;
+      done = true;
+      dialogEl?.close();
+    }
   }
 
   function phaseLabel(r: LiveActivityRow): string {
@@ -136,13 +150,28 @@
             {/if}
           </div>
         </div>
-        <button
-          onclick={() => dialogEl?.close()}
-          class="text-txtsecondary hover:text-txtmain p-1 rounded transition shrink-0"
-          title="Close"
-        >
-          <X size={20} />
-        </button>
+        <div class="flex items-center gap-2 shrink-0">
+          {#if !done && connected}
+            <button
+              type="button"
+              onclick={handleCancel}
+              disabled={cancelling}
+              class="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-red-300"
+              title="Cancel request"
+            >
+              <Octagon size={14} />
+              {cancelling ? "Cancelling..." : "Cancel"}
+            </button>
+          {/if}
+          <button
+            type="button"
+            onclick={() => dialogEl?.close()}
+            class="text-txtsecondary hover:text-txtmain p-1 rounded transition"
+            title="Close"
+          >
+            <X size={20} />
+          </button>
+        </div>
       </div>
 
       <!-- Prompt Processing Progress Bar -->
