@@ -302,13 +302,7 @@
         </thead>
         <tbody class="divide-y">
           {#each activityRows as row (row.key)}
-            <tr
-              class={row.kind === "live"
-                ? "whitespace-nowrap text-sm border-gray-200 dark:border-white/10 cursor-pointer hover:bg-[#5794f2]/5 transition-colors"
-                : "whitespace-nowrap text-sm border-gray-200 dark:border-white/10"
-              }
-              onclick={() => row.kind === "live" && viewLiveStream(row.live)}
-            >
+            <tr class="whitespace-nowrap text-sm border-gray-200 dark:border-white/10">
               <td class="px-4 py-4">{row.kind === "completed" ? row.metric.id + 1 : "live"}</td>
               <td class="px-6 py-4">{formatRelativeTime(row.timestamp)}</td>
               <td class="px-6 py-4">{row.kind === "completed" ? row.metric.model : row.live.model}</td>
@@ -369,7 +363,7 @@
               <td class="px-6 py-4">
                 {#if row.kind === "live"}
                   <button
-                    onclick={(e) => { e.stopPropagation(); viewLiveStream(row.live); }}
+                    onclick={() => viewLiveStream(row.live)}
                     class="btn btn--sm inline-flex items-center gap-1"
                   >
                     <Eye size={14} />

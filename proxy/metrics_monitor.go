@@ -649,8 +649,16 @@ func (mp *metricsMonitor) wrapHandler(
 
 	recorder := newBodyCopier(writer, extraWriters...)
 
-	// Filter Accept-Encoding to only include encodings we can decompress for metrics
-	if ae := request.Header.Get("Accept-Encoding"); ae != "" {
+	// For streaming requests, disable compression so the token counter can
+	// parse SSE chunks in real time. Metrics capture handles uncompressed
+	// bodies directly, no decompression needed.
+	isStreaming := false
+	if val := request.Context().Value(proxyCtxKey("streaming")); val != nil {
+		isStreaming = val.(bool)
+	}
+	if isStreaming && request.Header.Get("Accept-Encoding") != "" {
+		request.Header.Del("Accept-Encoding")
+	} else if ae := request.Header.Get("Accept-Encoding"); ae != "" {
 		request.Header.Set("Accept-Encoding", filterAcceptEncoding(ae))
 	}
 
