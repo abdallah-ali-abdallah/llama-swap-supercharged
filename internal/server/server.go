@@ -32,6 +32,7 @@ type Server struct {
 	metrics  *metricsMonitor
 	cancel   *requestCancelRegistry
 	liveActivity *liveActivityTracker
+	parserReg *parserRegistry
 	build    BuildInfo
 
 	local router.LocalRouter
@@ -136,6 +137,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	}
 	s.metrics.store = openMetricsStore(cfg, proxylog)
 	s.liveActivity = newLiveActivityTracker()
+	s.parserReg = newParserRegistry(local, s.liveActivity)
 	s.routes()
 	s.startPreload()
 	return s, nil
@@ -192,7 +194,7 @@ func (s *Server) routes() {
 		formFilterMW,
 		CreateInflightMiddleware(s.inflight),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
-		CreateLiveActivityMiddleware(s.liveActivity),
+		CreateLiveActivityMiddleware(s.liveActivity, s.parserReg),
 	)
 	// Custom endpoints only need auth.
 	apiChain := chain.New(authMW)

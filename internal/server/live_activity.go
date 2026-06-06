@@ -251,13 +251,16 @@ type TokenStreamChunk struct {
 
 // CreateLiveActivityMiddleware returns middleware that tracks in-flight
 // requests for live activity streaming.
-func CreateLiveActivityMiddleware(tracker *liveActivityTracker) chain.Middleware {
+func CreateLiveActivityMiddleware(tracker *liveActivityTracker, registry *parserRegistry) chain.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			data, ok := router.ReadContext(r.Context())
 			if !ok || data.ModelID == "" {
 				next.ServeHTTP(w, r)
 				return
+			}
+			if registry != nil {
+				registry.ensureWired(data.ModelID)
 			}
 			id := tracker.Start(data.ModelID)
 			defer tracker.Finish(id)
