@@ -2,6 +2,7 @@ import { writable } from "svelte/store";
 import type {
   Model,
   Metrics,
+  ActivityLogEntry,
   LiveActivityRow,
   TokenStreamChunk,
   VersionInfo,
@@ -20,6 +21,7 @@ export const models = writable<Model[]>([]);
 export const proxyLogs = writable<string>("");
 export const upstreamLogs = writable<string>("");
 export const metrics = writable<Metrics[]>([]);
+export const activityLog = writable<ActivityLogEntry[]>([]);
 export const inFlightRequests = writable<number>(0);
 export const versionInfo = writable<VersionInfo>({
   build_date: "unknown",
@@ -94,7 +96,9 @@ export function enableAPIEvents(enabled: boolean): void {
           }
 
           case "metrics": {
-            const newMetrics = JSON.parse(message.data) as Metrics[];
+            const entries = JSON.parse(message.data) as ActivityLogEntry[];
+            activityLog.update((prev) => [...entries, ...prev].slice(0, REALTIME_METRICS_LIMIT));
+            const newMetrics = entries.map(activityLogEntryToMetrics);
             metrics.update((prevMetrics) =>
               mergeRealtimeMetrics(newMetrics, prevMetrics),
             );
@@ -235,6 +239,27 @@ export async function fetchPerformance(after?: string): Promise<PerformanceRespo
 export const REALTIME_METRICS_MAX_AGE_MS = 10 * 60 * 1000;
 export const REALTIME_METRICS_LIMIT = 5000;
 export const activityLive = writable<LiveActivityRow[]>([]);
+
+function activityLogEntryToMetrics(e: ActivityLogEntry): Metrics {
+  return {
+    id: e.id,
+    timestamp: e.timestamp,
+    model: e.model,
+    cache_tokens: e.tokens?.cache_tokens ?? 0,
+    new_input_tokens: e.tokens?.input_tokens ?? 0,
+    output_tokens: e.tokens?.output_tokens ?? 0,
+    prompt_per_second: e.tokens?.prompt_per_second ?? 0,
+    tokens_per_second: e.tokens?.tokens_per_second ?? 0,
+    duration_ms: e.duration_ms,
+    prompt_ms: 0,
+    predicted_ms: 0,
+    has_capture: e.has_capture,
+    multimodal: false,
+    draft_acceptance_rate: 0,
+    accepted_drafts: 0,
+    generated_drafts: 0,
+  };
+}
 
 export function mergeRealtimeMetrics(
   newMetrics: Metrics[],

@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { metrics, getCapture } from "../stores/api";
+  import { activityLog, activityLive, getCapture } from "../stores/api";
   import ActivityStats from "../components/ActivityStats.svelte";
   import Tooltip from "../components/Tooltip.svelte";
   import CaptureDialog from "../components/CaptureDialog.svelte";
+  import LiveStreamDialog from "../components/LiveStreamDialog.svelte";
   import { persistentStore } from "../stores/persistent";
   import { onMount } from "svelte";
-  import type { ReqRespCapture } from "../lib/types";
+  import type { ReqRespCapture, LiveActivityRow } from "../lib/types";
 
   type ColumnKey =
     | "id"
@@ -119,11 +120,24 @@
     return "a while ago";
   }
 
-  let sortedMetrics = $derived([...$metrics].sort((a, b) => b.id - a.id));
+  let sortedMetrics = $derived([...$activityLog].sort((a, b) => b.id - a.id));
 
   let selectedCapture = $state<ReqRespCapture | null>(null);
   let dialogOpen = $state(false);
   let loadingCaptureId = $state<number | null>(null);
+
+  let streamRow = $state<LiveActivityRow | null>(null);
+  let streamOpen = $state(false);
+
+  function openStream(row: LiveActivityRow) {
+    streamRow = row;
+    streamOpen = true;
+  }
+
+  function closeStream() {
+    streamOpen = false;
+    streamRow = null;
+  }
 
   async function viewCapture(id: number) {
     loadingCaptureId = id;
@@ -143,6 +157,36 @@
   <div class="mt-4 mb-4">
     <ActivityStats />
   </div>
+
+  {#if $activityLive.length > 0}
+    <div class="card mb-4">
+      <div class="px-4 py-3 border-b border-gray-200 dark:border-white/10 font-medium text-sm">
+        Live Requests ({$activityLive.length})
+      </div>
+      <div class="divide-y">
+        {#each $activityLive as row (row.id)}
+          <div class="flex items-center justify-between px-4 py-2 text-sm">
+            <div class="flex items-center gap-3">
+              <span class="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+              <span class="font-medium">{row.model}</span>
+              <span class="text-gray-500 text-xs">{row.id}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              {#if row.pp_exact}
+                <span class="text-xs text-gray-500">PP {row.pp_progress}%</span>
+              {:else if row.pp_progress}
+                <span class="text-xs text-gray-500">PP ~{row.pp_progress}%</span>
+              {/if}
+              {#if row.generated_tokens}
+                <span class="text-xs text-gray-500">{row.generated_tokens} tokens</span>
+              {/if}
+              <button class="btn btn--sm" onclick={() => openStream(row)}>Stream</button>
+            </div>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   <div class="card overflow-auto relative min-h-[30rem]">
     <div class="flex justify-end px-4" bind:this={dropdownContainer}>
@@ -297,3 +341,4 @@
 </div>
 
 <CaptureDialog capture={selectedCapture} open={dialogOpen} onclose={closeDialog} />
+<LiveStreamDialog row={streamRow} open={streamOpen} onclose={closeStream} />

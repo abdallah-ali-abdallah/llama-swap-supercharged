@@ -175,10 +175,11 @@ func (s *Server) handleAPICapture(w http.ResponseWriter, r *http.Request) {
 type messageType string
 
 const (
-	msgTypeModelStatus messageType = "modelStatus"
-	msgTypeLogData     messageType = "logData"
-	msgTypeMetrics     messageType = "metrics"
-	msgTypeInFlight    messageType = "inflight"
+	msgTypeModelStatus  messageType = "modelStatus"
+	msgTypeLogData      messageType = "logData"
+	msgTypeMetrics      messageType = "metrics"
+	msgTypeInFlight     messageType = "inflight"
+	msgTypeActivityLive messageType = "activityLive"
 )
 
 type messageEnvelope struct {
@@ -244,6 +245,11 @@ func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.upstreamlog.OnLogData(func(data []byte) { sendLogData("upstream", data) })()
 	defer event.On(func(e ActivityLogEvent) { sendMetrics([]ActivityLogEntry{e.Metrics}) })()
 	defer event.On(func(e shared.InFlightRequestsEvent) { sendInFlight(e.Total) })()
+	defer event.On(func(e LiveActivityEvent) {
+		if j, err := json.Marshal(e.Rows); err == nil {
+			send(messageEnvelope{Type: msgTypeActivityLive, Data: string(j)})
+		}
+	})()
 
 	// initial payload
 	sendLogData("proxy", s.proxylog.GetHistory())
