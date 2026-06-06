@@ -31,6 +31,7 @@ type Server struct {
 	inflight *inflightCounter
 	metrics  *metricsMonitor
 	cancel   *requestCancelRegistry
+	liveActivity *liveActivityTracker
 	build    BuildInfo
 
 	local router.LocalRouter
@@ -134,6 +135,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		shutdownFn:  shutdownFn,
 	}
 	s.metrics.store = openMetricsStore(cfg, proxylog)
+	s.liveActivity = newLiveActivityTracker()
 	s.routes()
 	s.startPreload()
 	return s, nil
@@ -241,6 +243,7 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/version", apiChain.ThenFunc(s.handleAPIVersion))
 	mux.Handle("GET /api/captures/{id}", apiChain.ThenFunc(s.handleAPICapture))
 	mux.Handle("POST /api/activity/live/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelActivity))
+	mux.Handle("GET /api/activity/live/{id}/stream", apiChain.ThenFunc(s.handleAPILiveTokenStream))
 	mux.Handle("GET /api/settings/persistence", apiChain.ThenFunc(s.handleAPIPersistenceSettings))
 	mux.Handle("POST /api/settings/persistence", apiChain.ThenFunc(s.handleAPIUpdatePersistenceSettings))
 
