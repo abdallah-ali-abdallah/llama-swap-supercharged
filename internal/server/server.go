@@ -30,6 +30,7 @@ type Server struct {
 	perf     *perf.Monitor
 	inflight *inflightCounter
 	metrics  *metricsMonitor
+	cancel   *requestCancelRegistry
 	build    BuildInfo
 
 	local router.LocalRouter
@@ -125,6 +126,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		perf:        perfMon,
 		inflight:    &inflightCounter{},
 		metrics:     newMetricsMonitor(proxylog, cfg.MetricsMaxInMemory, cfg.CaptureBuffer),
+		cancel:      newRequestCancelRegistry(),
 		build:       build,
 		local:       local,
 		peer:        peer,
@@ -237,9 +239,24 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/performance", apiChain.ThenFunc(s.handleAPIPerformance))
 	mux.Handle("GET /api/version", apiChain.ThenFunc(s.handleAPIVersion))
 	mux.Handle("GET /api/captures/{id}", apiChain.ThenFunc(s.handleAPICapture))
+	mux.Handle("POST /api/activity/live/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelActivity))
 
 	s.mux = mux
 	s.handler = chain.New(CreateRequestLogMiddleware(s.proxylog), CreateCORSMiddleware()).Then(mux)
+}
+
+func (s *Server) handleAPICancelActivity(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, `{"error":"missing activity id"}`, http.StatusBadRequest)
+		return
+	}
+	if s.cancel.Cancel(id) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"success":true}`))
+	} else {
+		http.Error(w, `{"error":"activity not found or already completed"}`, http.StatusNotFound)
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
