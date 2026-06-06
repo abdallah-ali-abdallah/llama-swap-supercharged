@@ -241,6 +241,8 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/version", apiChain.ThenFunc(s.handleAPIVersion))
 	mux.Handle("GET /api/captures/{id}", apiChain.ThenFunc(s.handleAPICapture))
 	mux.Handle("POST /api/activity/live/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelActivity))
+	mux.Handle("GET /api/settings/persistence", apiChain.ThenFunc(s.handleAPIPersistenceSettings))
+	mux.Handle("POST /api/settings/persistence", apiChain.ThenFunc(s.handleAPIUpdatePersistenceSettings))
 
 	s.mux = mux
 	s.handler = chain.New(CreateRequestLogMiddleware(s.proxylog), CreateCORSMiddleware()).Then(mux)

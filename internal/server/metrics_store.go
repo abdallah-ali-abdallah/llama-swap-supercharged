@@ -335,6 +335,76 @@ func unixMs(t time.Time) int64 {
 	return t.UnixMilli()
 }
 
+func (s *metricsStore) getSettings() persistenceSettings {
+	if s == nil || s.db == nil {
+		return persistenceSettings{}
+	}
+	ps := persistenceSettings{
+		DBPath:                     s.path,
+		RetentionDays:              s.retentionDays,
+		LoggingEnabled:             s.loggingEnabled,
+		UsageMetricsPersistence:    s.usageMetricsPersistence,
+		ActivityPersistence:        s.activityPersistence,
+		ActivityCapturePersistence: s.activityCapturePersistence,
+		CaptureRedactHeaders:       s.captureRedactHeaders,
+		ActivityFields:             s.activityFields,
+		SQLiteAvailable:            true,
+	}
+
+	rows, err := s.db.Query(`SELECT key, value FROM persistence_settings`)
+	if err != nil {
+		return ps
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		switch key {
+		case "logging_enabled":
+			ps.LoggingEnabled = value == "true"
+		case "usage_metrics_persistence":
+			ps.UsageMetricsPersistence = value == "true"
+		case "activity_persistence":
+			ps.ActivityPersistence = value == "true"
+		case "activity_capture_persistence":
+			ps.ActivityCapturePersistence = value == "true"
+		case "capture_redact_headers":
+			ps.CaptureRedactHeaders = value == "true"
+		}
+	}
+	return ps
+}
+
+func (s *metricsStore) updateSettings(ps persistenceSettings) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loggingEnabled = ps.LoggingEnabled
+	s.usageMetricsPersistence = ps.UsageMetricsPersistence
+	s.activityPersistence = ps.ActivityPersistence
+	s.activityCapturePersistence = ps.ActivityCapturePersistence
+	s.captureRedactHeaders = ps.CaptureRedactHeaders
+	s.activityFields = ps.ActivityFields
+
+	pairs := map[string]string{
+		"logging_enabled":             fmt.Sprintf("%t", ps.LoggingEnabled),
+		"usage_metrics_persistence":    fmt.Sprintf("%t", ps.UsageMetricsPersistence),
+		"activity_persistence":         fmt.Sprintf("%t", ps.ActivityPersistence),
+		"activity_capture_persistence": fmt.Sprintf("%t", ps.ActivityCapturePersistence),
+		"capture_redact_headers":       fmt.Sprintf("%t", ps.CaptureRedactHeaders),
+	}
+	for key, value := range pairs {
+		if _, err := s.db.Exec(`INSERT INTO persistence_settings (key, value, updated_ms) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ms=excluded.updated_ms`, key, value, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1
