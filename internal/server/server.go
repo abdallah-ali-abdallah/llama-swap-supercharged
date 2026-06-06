@@ -192,6 +192,7 @@ func (s *Server) routes() {
 		formFilterMW,
 		CreateInflightMiddleware(s.inflight),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
+		CreateLiveActivityMiddleware(s.liveActivity),
 	)
 	// Custom endpoints only need auth.
 	apiChain := chain.New(authMW)

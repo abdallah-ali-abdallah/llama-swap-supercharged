@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mostlygeek/llama-swap/internal/chain"
 	"github.com/mostlygeek/llama-swap/internal/event"
+	"github.com/mostlygeek/llama-swap/internal/router"
 )
 
 const liveActivityStatusInProgress = "in_progress"
@@ -184,6 +186,23 @@ func (t *liveActivityTracker) snapshotLocked() []LiveActivityRow {
 type TokenStreamChunk struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+}
+
+// CreateLiveActivityMiddleware returns middleware that tracks in-flight
+// requests for live activity streaming.
+func CreateLiveActivityMiddleware(tracker *liveActivityTracker) chain.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			data, ok := router.ReadContext(r.Context())
+			if !ok || data.ModelID == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			id := tracker.Start(data.ModelID)
+			defer tracker.Finish(id)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (s *Server) handleAPILiveTokenStream(w http.ResponseWriter, r *http.Request) {
