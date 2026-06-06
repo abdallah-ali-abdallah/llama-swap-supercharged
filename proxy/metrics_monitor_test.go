@@ -5,46 +5,48 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/mostlygeek/llama-swap/event"
+	"github.com/mostlygeek/llama-swap/internal/cache"
+	"github.com/mostlygeek/llama-swap/internal/event"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 )
 
 func TestMetricsMonitor_AddMetrics(t *testing.T) {
 	t.Run("adds metrics and assigns ID", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
-		metric := TokenMetrics{
-			Model:          "test-model",
-			NewInputTokens: 100,
-			OutputTokens:   50,
+		metric := ActivityLogEntry{
+			Model: "test-model",
+			Tokens: TokenMetrics{
+				InputTokens:  100,
+				OutputTokens: 50,
+			},
 		}
 
-		mm.addMetrics(metric)
+		mm.queueMetrics(metric)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, 0, metrics[0].ID)
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 100, metrics[0].NewInputTokens)
-		assert.Equal(t, 50, metrics[0].OutputTokens)
+		assert.Equal(t, 100, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 50, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("increments ID for each metric", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		for i := 0; i < 5; i++ {
-			mm.addMetrics(TokenMetrics{Model: "model"})
+			mm.queueMetrics(ActivityLogEntry{Model: "model"})
 		}
 
 		metrics := mm.getMetrics()
@@ -55,13 +57,15 @@ func TestMetricsMonitor_AddMetrics(t *testing.T) {
 	})
 
 	t.Run("respects max metrics limit", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 3, 0, nil)
+		mm := newMetricsMonitor(testLogger, 3, 0)
 
 		// Add 5 metrics
 		for i := 0; i < 5; i++ {
-			mm.addMetrics(TokenMetrics{
-				Model:          "model",
-				NewInputTokens: i,
+			mm.queueMetrics(ActivityLogEntry{
+				Model: "model",
+				Tokens: TokenMetrics{
+					InputTokens: i,
+				},
 			})
 		}
 
@@ -74,29 +78,32 @@ func TestMetricsMonitor_AddMetrics(t *testing.T) {
 		assert.Equal(t, 4, metrics[2].ID)
 	})
 
-	t.Run("emits TokenMetricsEvent", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+	t.Run("emits ActivityLogEvent", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
-		receivedEvent := make(chan TokenMetricsEvent, 1)
-		cancel := event.On(func(e TokenMetricsEvent) {
+		receivedEvent := make(chan ActivityLogEvent, 1)
+		cancel := event.On(func(e ActivityLogEvent) {
 			receivedEvent <- e
 		})
 		defer cancel()
 
-		metric := TokenMetrics{
-			Model:          "test-model",
-			NewInputTokens: 100,
-			OutputTokens:   50,
+		metric := ActivityLogEntry{
+			Model: "test-model",
+			Tokens: TokenMetrics{
+				InputTokens:  100,
+				OutputTokens: 50,
+			},
 		}
 
-		mm.addMetrics(metric)
+		mm.queueMetrics(metric)
+		mm.emitMetric(metric)
 
 		select {
 		case evt := <-receivedEvent:
 			assert.Equal(t, 0, evt.Metrics.ID)
 			assert.Equal(t, "test-model", evt.Metrics.Model)
-			assert.Equal(t, 100, evt.Metrics.NewInputTokens)
-			assert.Equal(t, 50, evt.Metrics.OutputTokens)
+			assert.Equal(t, 100, evt.Metrics.Tokens.InputTokens)
+			assert.Equal(t, 50, evt.Metrics.Tokens.OutputTokens)
 		case <-time.After(1 * time.Second):
 			t.Fatal("timeout waiting for event")
 		}
@@ -105,16 +112,16 @@ func TestMetricsMonitor_AddMetrics(t *testing.T) {
 
 func TestMetricsMonitor_GetMetrics(t *testing.T) {
 	t.Run("returns empty slice when no metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 		metrics := mm.getMetrics()
 		assert.NotNil(t, metrics)
 		assert.Equal(t, 0, len(metrics))
 	})
 
 	t.Run("returns copy of metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
-		mm.addMetrics(TokenMetrics{Model: "model1"})
-		mm.addMetrics(TokenMetrics{Model: "model2"})
+		mm := newMetricsMonitor(testLogger, 10, 0)
+		mm.queueMetrics(ActivityLogEntry{Model: "model1"})
+		mm.queueMetrics(ActivityLogEntry{Model: "model2"})
 
 		metrics1 := mm.getMetrics()
 		metrics2 := mm.getMetrics()
@@ -132,36 +139,40 @@ func TestMetricsMonitor_GetMetrics(t *testing.T) {
 
 func TestMetricsMonitor_GetMetricsJSON(t *testing.T) {
 	t.Run("returns valid JSON for empty metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 		jsonData, err := mm.getMetricsJSON()
 		assert.NoError(t, err)
 		assert.NotNil(t, jsonData)
 
-		var metrics []TokenMetrics
+		var metrics []ActivityLogEntry
 		err = json.Unmarshal(jsonData, &metrics)
 		assert.NoError(t, err)
 		assert.Equal(t, 0, len(metrics))
 	})
 
 	t.Run("returns valid JSON with metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
-		mm.addMetrics(TokenMetrics{
-			Model:           "model1",
-			NewInputTokens:  100,
-			OutputTokens:    50,
-			TokensPerSecond: 25.5,
+		mm := newMetricsMonitor(testLogger, 10, 0)
+		mm.queueMetrics(ActivityLogEntry{
+			Model: "model1",
+			Tokens: TokenMetrics{
+				InputTokens:     100,
+				OutputTokens:    50,
+				TokensPerSecond: 25.5,
+			},
 		})
-		mm.addMetrics(TokenMetrics{
-			Model:           "model2",
-			NewInputTokens:  200,
-			OutputTokens:    100,
-			TokensPerSecond: 30.0,
+		mm.queueMetrics(ActivityLogEntry{
+			Model: "model2",
+			Tokens: TokenMetrics{
+				InputTokens:     200,
+				OutputTokens:    100,
+				TokensPerSecond: 30.0,
+			},
 		})
 
 		jsonData, err := mm.getMetricsJSON()
 		assert.NoError(t, err)
 
-		var metrics []TokenMetrics
+		var metrics []ActivityLogEntry
 		err = json.Unmarshal(jsonData, &metrics)
 		assert.NoError(t, err)
 		assert.Equal(t, 2, len(metrics))
@@ -172,7 +183,7 @@ func TestMetricsMonitor_GetMetricsJSON(t *testing.T) {
 
 func TestMetricsMonitor_WrapHandler(t *testing.T) {
 	t.Run("successful non-streaming request with usage data", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{
 			"usage": {
@@ -192,18 +203,18 @@ func TestMetricsMonitor_WrapHandler(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 100, metrics[0].NewInputTokens)
-		assert.Equal(t, 50, metrics[0].OutputTokens)
+		assert.Equal(t, 100, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 50, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("successful request with timings data", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{
 			"timings": {
@@ -213,9 +224,7 @@ func TestMetricsMonitor_WrapHandler(t *testing.T) {
 				"predicted_per_second": 25.5,
 				"prompt_ms": 500.0,
 				"predicted_ms": 1500.0,
-				"cache_n": 20,
-				"draft_n": 12,
-				"draft_n_accepted": 9
+				"cache_n": 20
 			}
 		}`
 
@@ -230,129 +239,22 @@ func TestMetricsMonitor_WrapHandler(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 100, metrics[0].NewInputTokens)
-		assert.Equal(t, 50, metrics[0].OutputTokens)
-		assert.Equal(t, 20, metrics[0].CachedTokens)
-		assert.Equal(t, 150.5, metrics[0].PromptPerSecond)
-		assert.Equal(t, 25.5, metrics[0].TokensPerSecond)
+		assert.Equal(t, 100, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 50, metrics[0].Tokens.OutputTokens)
+		assert.Equal(t, 20, metrics[0].Tokens.CachedTokens)
+		assert.Equal(t, 150.5, metrics[0].Tokens.PromptPerSecond)
+		assert.Equal(t, 25.5, metrics[0].Tokens.TokensPerSecond)
 		assert.Equal(t, 2000, metrics[0].DurationMs) // 500 + 1500
-		assert.Equal(t, 500, metrics[0].PromptMs)
-		assert.Equal(t, 1500, metrics[0].PredictedMs)
-		assert.Equal(t, 12, metrics[0].GeneratedDrafts)
-		assert.Equal(t, 9, metrics[0].AcceptedDrafts)
-		assert.Equal(t, 0.75, metrics[0].DraftAcceptanceRate)
-	})
-
-	t.Run("tracks live activity during request", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
-		mm.liveActivity = newLiveActivityTracker()
-
-		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
-			rows := mm.liveActivity.Snapshot()
-			assert.Equal(t, 1, len(rows))
-			assert.Equal(t, "test-model", rows[0].Model)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
-			return nil
-		}
-
-		req := httptest.NewRequest("POST", "/test", nil)
-		rec := httptest.NewRecorder()
-		ginCtx, _ := gin.CreateTestContext(rec)
-
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
-
-		assert.NoError(t, err)
-		assert.Empty(t, mm.liveActivity.Snapshot())
-	})
-
-	t.Run("enriches metrics with speculative decoding stats from upstream logs", func(t *testing.T) {
-		upstreamLogger := NewLogMonitorWriter(io.Discard)
-		mm := newMetricsMonitor(testLogger, 10, 0, upstreamLogger)
-		defer mm.close()
-
-		responseBody := `{
-			"usage": {
-				"prompt_tokens": 10,
-				"completion_tokens": 5
-			}
-		}`
-
-		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(responseBody))
-			go func() {
-				time.Sleep(20 * time.Millisecond)
-				upstreamLogger.Write([]byte("draft acceptance rate = 0.80000 (    8 accepted /    10 generated)\n"))
-			}()
-			return nil
-		}
-
-		req := httptest.NewRequest("POST", "/test", nil)
-		rec := httptest.NewRecorder()
-		ginCtx, _ := gin.CreateTestContext(rec)
-
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
-		assert.NoError(t, err)
-
-		metrics := mm.getMetrics()
-		assert.Equal(t, 1, len(metrics))
-		assert.Equal(t, 0.8, metrics[0].DraftAcceptanceRate)
-		assert.Equal(t, 8, metrics[0].AcceptedDrafts)
-		assert.Equal(t, 10, metrics[0].GeneratedDrafts)
-	})
-
-	t.Run("persists speculative decoding stats with the initial metric write", func(t *testing.T) {
-		store, err := newMetricsStoreWithOptions(filepath.Join(t.TempDir(), "metrics.db"), 30, 100, true, true, false, allActivityFields(), testLogger)
-		assert.NoError(t, err)
-		upstreamLogger := NewLogMonitorWriter(io.Discard)
-		mm := newMetricsMonitor(testLogger, 10, 0, upstreamLogger, store)
-		defer mm.close()
-
-		responseBody := `{
-			"usage": {
-				"prompt_tokens": 12,
-				"completion_tokens": 6
-			}
-		}`
-
-		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(responseBody))
-			go func() {
-				time.Sleep(20 * time.Millisecond)
-				upstreamLogger.Write([]byte("draft acceptance rate = 0.60000 (    3 accepted /     5 generated)\n"))
-			}()
-			return nil
-		}
-
-		req := httptest.NewRequest("POST", "/test", nil)
-		rec := httptest.NewRecorder()
-		ginCtx, _ := gin.CreateTestContext(rec)
-
-		err = mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
-		assert.NoError(t, err)
-
-		restored, truncated, err := mm.getMetricsForRange(metricsQuery{Limit: 10})
-		assert.NoError(t, err)
-		assert.False(t, truncated)
-		assert.Equal(t, 1, len(restored))
-		assert.Equal(t, 0.6, restored[0].DraftAcceptanceRate)
-		assert.Equal(t, 3, restored[0].AcceptedDrafts)
-		assert.Equal(t, 5, restored[0].GeneratedDrafts)
 	})
 
 	t.Run("streaming request with SSE format", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		// Note: SSE format requires proper line breaks - each data line followed by blank line
 		responseBody := `data: {"choices":[{"text":"Hello"}]}
@@ -376,19 +278,19 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
 		// When timings data is present, it takes precedence
-		assert.Equal(t, 10, metrics[0].NewInputTokens)
-		assert.Equal(t, 20, metrics[0].OutputTokens)
+		assert.Equal(t, 10, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 20, metrics[0].Tokens.OutputTokens)
 	})
 
-	t.Run("non-OK status code does not record metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+	t.Run("non-OK status code records partial metrics", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
 			w.WriteHeader(http.StatusBadRequest)
@@ -400,15 +302,20 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
-		assert.Equal(t, 0, len(metrics))
+		assert.Equal(t, 1, len(metrics))
+		assert.Equal(t, "test-model", metrics[0].Model)
+		assert.Equal(t, "/test", metrics[0].ReqPath)
+		assert.Equal(t, http.StatusBadRequest, metrics[0].RespStatusCode)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("empty response body records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
 			w.WriteHeader(http.StatusOK)
@@ -419,18 +326,18 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("invalid JSON records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
 			w.Header().Set("Content-Type", "application/json")
@@ -443,18 +350,18 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err) // Errors after response is sent are logged, not returned
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("next handler error is propagated", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		expectedErr := assert.AnError
 		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
@@ -465,7 +372,7 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.Equal(t, expectedErr, err)
 
 		metrics := mm.getMetrics()
@@ -473,7 +380,7 @@ data: [DONE]
 	})
 
 	t.Run("response without usage or timings records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{"result": "ok"}`
 
@@ -488,18 +395,18 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("infill request extracts timings from last array element", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		// Infill response is an array with timings in the last element
 		responseBody := `[
@@ -527,24 +434,22 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 150, metrics[0].NewInputTokens)
-		assert.Equal(t, 75, metrics[0].OutputTokens)
-		assert.Equal(t, 30, metrics[0].CachedTokens)
-		assert.Equal(t, 200.5, metrics[0].PromptPerSecond)
-		assert.Equal(t, 35.5, metrics[0].TokensPerSecond)
+		assert.Equal(t, 150, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 75, metrics[0].Tokens.OutputTokens)
+		assert.Equal(t, 30, metrics[0].Tokens.CachedTokens)
+		assert.Equal(t, 200.5, metrics[0].Tokens.PromptPerSecond)
+		assert.Equal(t, 35.5, metrics[0].Tokens.TokensPerSecond)
 		assert.Equal(t, 2400, metrics[0].DurationMs) // 600 + 1800
-		assert.Equal(t, 600, metrics[0].PromptMs)
-		assert.Equal(t, 1800, metrics[0].PredictedMs)
 	})
 
 	t.Run("infill request with empty array records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `[]`
 
@@ -559,14 +464,14 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 }
 
@@ -585,14 +490,10 @@ func TestMetricsMonitor_ResponseBodyCopier(t *testing.T) {
 		assert.Equal(t, string(testData), rec.Body.String())
 	})
 
-	t.Run("sets start time on first write", func(t *testing.T) {
+	t.Run("sets start time on creation", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 		copier := newBodyCopier(ginCtx.Writer)
-
-		assert.True(t, copier.StartTime().IsZero())
-
-		copier.Write([]byte("test"))
 
 		assert.False(t, copier.StartTime().IsZero())
 	})
@@ -620,8 +521,8 @@ func TestMetricsMonitor_ResponseBodyCopier(t *testing.T) {
 }
 
 func TestMetricsMonitor_Concurrent(t *testing.T) {
-	t.Run("concurrent addMetrics is safe", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 1000, 0, nil)
+	t.Run("concurrent queueMetrics is safe", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 1000, 0)
 
 		var wg sync.WaitGroup
 		numGoroutines := 10
@@ -632,10 +533,12 @@ func TestMetricsMonitor_Concurrent(t *testing.T) {
 			go func(id int) {
 				defer wg.Done()
 				for j := 0; j < metricsPerGoroutine; j++ {
-					mm.addMetrics(TokenMetrics{
-						Model:          "test-model",
-						NewInputTokens: id*1000 + j,
-						OutputTokens:   j,
+					mm.queueMetrics(ActivityLogEntry{
+						Model: "test-model",
+						Tokens: TokenMetrics{
+							InputTokens:  id*1000 + j,
+							OutputTokens: j,
+						},
 					})
 				}
 			}(i)
@@ -648,14 +551,14 @@ func TestMetricsMonitor_Concurrent(t *testing.T) {
 	})
 
 	t.Run("concurrent reads and writes are safe", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 100, 0, nil)
+		mm := newMetricsMonitor(testLogger, 100, 0)
 
 		done := make(chan bool)
 
 		// Writer goroutine
 		go func() {
 			for i := 0; i < 50; i++ {
-				mm.addMetrics(TokenMetrics{Model: "test-model"})
+				mm.queueMetrics(ActivityLogEntry{Model: "test-model"})
 				time.Sleep(1 * time.Millisecond)
 			}
 			done <- true
@@ -699,38 +602,15 @@ func TestMetricsMonitor_ParseMetrics(t *testing.T) {
 
 		metrics, err := parseMetrics("test-model", start, usage, timings)
 		assert.NoError(t, err)
-		assert.Equal(t, 5, metrics.NewInputTokens)
-		assert.Equal(t, 1, metrics.OutputTokens)
-		assert.Equal(t, 10.0, metrics.PromptPerSecond)
-		assert.Equal(t, -1.0, metrics.TokensPerSecond)
-		assert.Equal(t, 5, metrics.PromptMs)
-		assert.Equal(t, 15, metrics.PredictedMs)
+		assert.Equal(t, 5, metrics.Tokens.InputTokens)
+		assert.Equal(t, 1, metrics.Tokens.OutputTokens)
+		assert.Equal(t, 10.0, metrics.Tokens.PromptPerSecond)
+		assert.Equal(t, 2.0, metrics.Tokens.TokensPerSecond)
 		assert.GreaterOrEqual(t, metrics.DurationMs, 5000)
 	})
 
-	t.Run("ignores generation speed for a single output token", func(t *testing.T) {
-		start := time.Now().Add(-5 * time.Second)
-		usage := gjson.Parse(`{"prompt_tokens": 120024, "completion_tokens": 1}`)
-		timings := gjson.Parse(`{
-			"prompt_n": 120024,
-			"predicted_n": 1,
-			"prompt_per_second": 342.44,
-			"predicted_per_second": 1000000.0,
-			"prompt_ms": 350498.411,
-			"predicted_ms": 0.001
-		}`)
-
-		metrics, err := parseMetrics("test-model", start, usage, timings)
-
-		assert.NoError(t, err)
-		assert.Equal(t, 1, metrics.OutputTokens)
-		assert.Equal(t, -1.0, metrics.TokensPerSecond)
-		assert.Equal(t, 350498, metrics.PromptMs)
-		assert.Equal(t, 0, metrics.PredictedMs)
-	})
-
 	t.Run("prefers timings over usage data", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		// Timings should take precedence over usage
 		responseBody := `{
@@ -759,20 +639,18 @@ func TestMetricsMonitor_ParseMetrics(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		// Should use timings values, not usage values
-		assert.Equal(t, 100, metrics[0].NewInputTokens)
-		assert.Equal(t, 50, metrics[0].OutputTokens)
-		assert.Equal(t, 500, metrics[0].PromptMs)
-		assert.Equal(t, 1500, metrics[0].PredictedMs)
+		assert.Equal(t, 100, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 50, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("handles missing cache_n in timings", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{
 			"timings": {
@@ -796,18 +674,18 @@ func TestMetricsMonitor_ParseMetrics(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
-		assert.Equal(t, -1, metrics[0].CachedTokens) // Default value when not present
+		assert.Equal(t, -1, metrics[0].Tokens.CachedTokens) // Default value when not present
 	})
 }
 
 func TestMetricsMonitor_StreamingResponse(t *testing.T) {
 	t.Run("finds metrics in last valid SSE data", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		// Metrics should be found in the last data line before [DONE]
 		responseBody := `data: {"choices":[{"text":"First"}]}
@@ -831,17 +709,17 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
-		assert.Equal(t, 100, metrics[0].NewInputTokens)
-		assert.Equal(t, 50, metrics[0].OutputTokens)
+		assert.Equal(t, 100, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 50, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("handles streaming with no valid JSON records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `data: not json
 
@@ -860,18 +738,18 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("v1/responses format with nested response.usage", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		// v1/responses SSE format: usage is nested under response.usage
 		responseBody := "event: response.completed\n" +
@@ -889,18 +767,136 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 17, metrics[0].NewInputTokens)
-		assert.Equal(t, 23, metrics[0].OutputTokens)
+		assert.Equal(t, 17, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 23, metrics[0].Tokens.OutputTokens)
+	})
+
+	t.Run("v1/responses full stream with deltas, output, and cached tokens", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 0)
+
+		// Realistic v1/responses stream: multiple delta events followed by
+		// done/completed events. Usage lives on response.completed and includes
+		// the OpenAI Responses cached-token shape (input_tokens_details.cached_tokens).
+		responseBody := "event: response.created\n" +
+			`data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}` + "\n\n" +
+			"event: response.output_item.added\n" +
+			`data: {"type":"response.output_item.added","item":{"id":"msg_1","role":"assistant","status":"in_progress","type":"message"}}` + "\n\n" +
+			"event: response.content_part.added\n" +
+			`data: {"type":"response.content_part.added","item_id":"msg_1","part":{"type":"output_text","text":""}}` + "\n\n" +
+			"event: response.output_text.delta\n" +
+			`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"Hello"}` + "\n\n" +
+			"event: response.output_text.delta\n" +
+			`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":" world"}` + "\n\n" +
+			"event: response.output_text.done\n" +
+			`data: {"type":"response.output_text.done","item_id":"msg_1","text":"Hello world"}` + "\n\n" +
+			"event: response.content_part.done\n" +
+			`data: {"type":"response.content_part.done","item_id":"msg_1","part":{"type":"output_text","text":"Hello world"}}` + "\n\n" +
+			"event: response.output_item.done\n" +
+			`data: {"type":"response.output_item.done","item":{"type":"message","status":"completed","id":"msg_1","content":[{"type":"output_text","text":"Hello world"}],"role":"assistant"}}` + "\n\n" +
+			"event: response.completed\n" +
+			`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","model":"test-model","output":[{"type":"message","status":"completed","id":"msg_1","content":[{"type":"output_text","text":"Hello world"}],"role":"assistant"}],"usage":{"input_tokens":14,"output_tokens":24,"total_tokens":38,"input_tokens_details":{"cached_tokens":13}}}}` + "\n\n"
+
+		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(responseBody))
+			return nil
+		}
+
+		req := httptest.NewRequest("POST", "/v1/responses", nil)
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
+		assert.NoError(t, err)
+
+		metrics := mm.getMetrics()
+		assert.Equal(t, 1, len(metrics))
+		assert.Equal(t, "test-model", metrics[0].Model)
+		assert.Equal(t, 14, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 24, metrics[0].Tokens.OutputTokens)
+		assert.Equal(t, 13, metrics[0].Tokens.CachedTokens)
+	})
+
+	t.Run("v1/messages merges usage from message_start and message_delta", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 0)
+
+		// v1/messages splits usage across two events:
+		//   message_start.message.usage has input_tokens + cache_read_input_tokens
+		//   message_delta.usage has the final output_tokens
+		// Without merging, output_tokens (last seen) would clobber the input fields.
+		responseBody := "event: message_start\n" +
+			`data: {"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"test-model","usage":{"cache_read_input_tokens":5,"input_tokens":9,"output_tokens":0}}}` + "\n\n" +
+			"event: content_block_start\n" +
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+			"event: content_block_delta\n" +
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}` + "\n\n" +
+			"event: content_block_delta\n" +
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" there"}}` + "\n\n" +
+			"event: content_block_stop\n" +
+			`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+			"event: message_delta\n" +
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":24}}` + "\n\n" +
+			"event: message_stop\n" +
+			`data: {"type":"message_stop"}` + "\n\n"
+
+		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(responseBody))
+			return nil
+		}
+
+		req := httptest.NewRequest("POST", "/v1/messages", nil)
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
+		assert.NoError(t, err)
+
+		metrics := mm.getMetrics()
+		assert.Equal(t, 1, len(metrics))
+		assert.Equal(t, 9, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 24, metrics[0].Tokens.OutputTokens)
+		assert.Equal(t, 5, metrics[0].Tokens.CachedTokens)
+	})
+
+	t.Run("v1/chat/completions OpenAI prompt_tokens_details.cached_tokens", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 0)
+
+		responseBody := `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n" +
+			`data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":50,"completion_tokens":12,"prompt_tokens_details":{"cached_tokens":42}}}` + "\n\n" +
+			"data: [DONE]\n\n"
+
+		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(responseBody))
+			return nil
+		}
+
+		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
+		assert.NoError(t, err)
+
+		metrics := mm.getMetrics()
+		assert.Equal(t, 1, len(metrics))
+		assert.Equal(t, 50, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 12, metrics[0].Tokens.OutputTokens)
+		assert.Equal(t, 42, metrics[0].Tokens.CachedTokens)
 	})
 
 	t.Run("handles empty streaming response records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := ``
 
@@ -915,62 +911,66 @@ data: [DONE]
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 }
 
 // Benchmark tests
 func BenchmarkMetricsMonitor_AddMetrics(b *testing.B) {
-	mm := newMetricsMonitor(testLogger, 1000, 0, nil)
+	mm := newMetricsMonitor(testLogger, 1000, 0)
 
-	metric := TokenMetrics{
-		Model:           "test-model",
-		CachedTokens:    100,
-		NewInputTokens:  500,
-		OutputTokens:    250,
-		PromptPerSecond: 1200.5,
-		TokensPerSecond: 45.8,
-		DurationMs:      5000,
-		Timestamp:       time.Now(),
+	metric := ActivityLogEntry{
+		Model: "test-model",
+		Tokens: TokenMetrics{
+			CachedTokens:    100,
+			InputTokens:     500,
+			OutputTokens:    250,
+			PromptPerSecond: 1200.5,
+			TokensPerSecond: 45.8,
+		},
+		DurationMs: 5000,
+		Timestamp:  time.Now(),
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mm.addMetrics(metric)
+		mm.queueMetrics(metric)
 	}
 }
 
 func BenchmarkMetricsMonitor_AddMetrics_SmallBuffer(b *testing.B) {
 	// Test performance with a smaller buffer where wrapping occurs more frequently
-	mm := newMetricsMonitor(testLogger, 100, 0, nil)
+	mm := newMetricsMonitor(testLogger, 100, 0)
 
-	metric := TokenMetrics{
-		Model:           "test-model",
-		CachedTokens:    100,
-		NewInputTokens:  500,
-		OutputTokens:    250,
-		PromptPerSecond: 1200.5,
-		TokensPerSecond: 45.8,
-		DurationMs:      5000,
-		Timestamp:       time.Now(),
+	metric := ActivityLogEntry{
+		Model: "test-model",
+		Tokens: TokenMetrics{
+			CachedTokens:    100,
+			InputTokens:     500,
+			OutputTokens:    250,
+			PromptPerSecond: 1200.5,
+			TokensPerSecond: 45.8,
+		},
+		DurationMs: 5000,
+		Timestamp:  time.Now(),
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mm.addMetrics(metric)
+		mm.queueMetrics(metric)
 	}
 }
 
 func TestMetricsMonitor_WrapHandler_Compression(t *testing.T) {
 	t.Run("gzip encoded response", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`
 
@@ -993,18 +993,18 @@ func TestMetricsMonitor_WrapHandler_Compression(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 100, metrics[0].NewInputTokens)
-		assert.Equal(t, 50, metrics[0].OutputTokens)
+		assert.Equal(t, 100, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 50, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("deflate encoded response", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{"usage": {"prompt_tokens": 200, "completion_tokens": 75}}`
 
@@ -1027,18 +1027,18 @@ func TestMetricsMonitor_WrapHandler_Compression(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 200, metrics[0].NewInputTokens)
-		assert.Equal(t, 75, metrics[0].OutputTokens)
+		assert.Equal(t, 200, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 75, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("invalid gzip data records minimal metrics", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		// Invalid compressed data
 		invalidData := []byte("this is not gzip data")
@@ -1055,18 +1055,18 @@ func TestMetricsMonitor_WrapHandler_Compression(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err) // Should not return error, just log warning
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
 		assert.Equal(t, "test-model", metrics[0].Model)
-		assert.Equal(t, 0, metrics[0].NewInputTokens)
-		assert.Equal(t, 0, metrics[0].OutputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 0, metrics[0].Tokens.OutputTokens)
 	})
 
 	t.Run("unknown encoding treated as uncompressed", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		responseBody := `{"usage": {"prompt_tokens": 300, "completion_tokens": 100}}`
 
@@ -1082,13 +1082,13 @@ func TestMetricsMonitor_WrapHandler_Compression(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		metrics := mm.getMetrics()
 		assert.Equal(t, 1, len(metrics))
-		assert.Equal(t, 300, metrics[0].NewInputTokens)
-		assert.Equal(t, 100, metrics[0].OutputTokens)
+		assert.Equal(t, 300, metrics[0].Tokens.InputTokens)
+		assert.Equal(t, 100, metrics[0].Tokens.OutputTokens)
 	})
 }
 
@@ -1118,7 +1118,7 @@ func TestReqRespCapture_CompressedSize(t *testing.T) {
 
 func TestMetricsMonitor_AddCapture(t *testing.T) {
 	t.Run("does nothing when captures disabled", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		capture := ReqRespCapture{
 			ID:      0,
@@ -1127,11 +1127,11 @@ func TestMetricsMonitor_AddCapture(t *testing.T) {
 		mm.addCapture(capture)
 
 		// Should not store capture
-		assert.Nil(t, mm.getCaptureByID(0, false))
+		assert.Nil(t, mm.getCaptureByID(0))
 	})
 
 	t.Run("adds capture when enabled", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
+		mm := newMetricsMonitor(testLogger, 10, 5)
 
 		capture := ReqRespCapture{
 			ID:       0,
@@ -1140,22 +1140,18 @@ func TestMetricsMonitor_AddCapture(t *testing.T) {
 		}
 		mm.addCapture(capture)
 
-		retrieved := mm.getCaptureByID(0, true)
-		assert.NotNil(t, retrieved)
-
-		var decoded ReqRespCapture
-		err := json.Unmarshal(retrieved, &decoded)
-		assert.NoError(t, err)
-		assert.Equal(t, 0, decoded.ID)
-		assert.Equal(t, []byte("test request"), decoded.ReqBody)
-		assert.Equal(t, []byte("test response"), decoded.RespBody)
+		captured := mm.getCaptureByID(0)
+		assert.NotNil(t, captured)
+		assert.Equal(t, 0, captured.ID)
+		assert.Equal(t, []byte("test request"), captured.ReqBody)
+		assert.Equal(t, []byte("test response"), captured.RespBody)
 	})
 
 	t.Run("evicts oldest when exceeding max size", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
+		mm := newMetricsMonitor(testLogger, 10, 5)
 		// Each full ReqRespCapture with 80 bytes random data compresses to ~185 bytes.
 		// 2 captures = ~370 bytes, 3 captures = ~555 bytes. Set limit so only 2 fit.
-		mm.maxCaptureSize = 450
+		mm.captureCache = cache.New(450)
 
 		// Use random-looking data that doesn't compress well with zstd
 		rng := rand.New(rand.NewSource(42))
@@ -1171,16 +1167,14 @@ func TestMetricsMonitor_AddCapture(t *testing.T) {
 		// Adding capture3 should evict capture1
 		mm.addCapture(capture3)
 
-		assert.Nil(t, mm.getCaptureByID(0, true), "capture 0 should be evicted")
-		retrieved := mm.getCaptureByID(1, true)
-		assert.NotNil(t, retrieved, "capture 1 should exist")
-		retrieved = mm.getCaptureByID(2, true)
-		assert.NotNil(t, retrieved, "capture 2 should exist")
+		assert.Nil(t, mm.getCaptureByID(0), "capture 0 should be evicted")
+		assert.NotNil(t, mm.getCaptureByID(1), "capture 1 should exist")
+		assert.NotNil(t, mm.getCaptureByID(2), "capture 2 should exist")
 	})
 
 	t.Run("skips capture larger than max size", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
-		mm.maxCaptureSize = 100
+		mm := newMetricsMonitor(testLogger, 10, 5)
+		mm.captureCache = cache.New(100)
 
 		// Use random data that doesn't compress well to create an oversized capture
 		rng := rand.New(rand.NewSource(99))
@@ -1188,19 +1182,19 @@ func TestMetricsMonitor_AddCapture(t *testing.T) {
 		rng.Read(largeCapture.ReqBody)
 		mm.addCapture(largeCapture)
 
-		assert.Nil(t, mm.getCaptureByID(0, false), "oversized capture should not be stored")
+		assert.Nil(t, mm.getCaptureByID(0), "oversized capture should not be stored")
 	})
 }
 
 func TestMetricsMonitor_GetCaptureByID(t *testing.T) {
 	t.Run("returns nil for non-existent ID", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
+		mm := newMetricsMonitor(testLogger, 10, 5)
 
-		assert.Nil(t, mm.getCaptureByID(999, false))
+		assert.Nil(t, mm.getCaptureByID(999))
 	})
 
 	t.Run("returns decompressed capture by ID", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
+		mm := newMetricsMonitor(testLogger, 10, 5)
 
 		capture := ReqRespCapture{
 			ID:       42,
@@ -1209,19 +1203,15 @@ func TestMetricsMonitor_GetCaptureByID(t *testing.T) {
 		}
 		mm.addCapture(capture)
 
-		retrieved := mm.getCaptureByID(42, true)
-		assert.NotNil(t, retrieved)
-
-		var decoded ReqRespCapture
-		err := json.Unmarshal(retrieved, &decoded)
-		assert.NoError(t, err)
-		assert.Equal(t, 42, decoded.ID)
-		assert.Equal(t, []byte("test request"), decoded.ReqBody)
-		assert.Equal(t, []byte("test response"), decoded.RespBody)
+		captured := mm.getCaptureByID(42)
+		assert.NotNil(t, captured)
+		assert.Equal(t, 42, captured.ID)
+		assert.Equal(t, []byte("test request"), captured.ReqBody)
+		assert.Equal(t, []byte("test response"), captured.RespBody)
 	})
 
-	t.Run("returns compressed bytes when decompress=false", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
+	t.Run("stores data as compressed bytes", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 5)
 
 		capture := ReqRespCapture{
 			ID:       42,
@@ -1230,10 +1220,12 @@ func TestMetricsMonitor_GetCaptureByID(t *testing.T) {
 		}
 		mm.addCapture(capture)
 
-		compressed := mm.getCaptureByID(42, false)
+		compressed, exists := mm.getCompressedBytes(42)
+		assert.True(t, exists)
 		assert.NotNil(t, compressed)
-		// Compressed data should not be valid JSON (it's zstd-compressed)
-		assert.False(t, gjson.ValidBytes(compressed))
+		// Compressed data should not be valid CBOR (it's zstd-compressed)
+		var decoded ReqRespCapture
+		assert.Error(t, cbor.Unmarshal(compressed, &decoded))
 	})
 }
 
@@ -1283,7 +1275,7 @@ func TestRedactHeaders(t *testing.T) {
 
 func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 	t.Run("captures request and response when enabled", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 5, nil)
+		mm := newMetricsMonitor(testLogger, 10, 5)
 
 		requestBody := `{"model": "test", "prompt": "hello"}`
 		responseBody := `{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`
@@ -1302,7 +1294,7 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		// Check metric was recorded
@@ -1311,12 +1303,8 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		metricID := metrics[0].ID
 
 		// Check capture was stored with same ID (decompressed)
-		captureData := mm.getCaptureByID(metricID, true)
-		assert.NotNil(t, captureData)
-
-		var capture ReqRespCapture
-		err = json.Unmarshal(captureData, &capture)
-		assert.NoError(t, err)
+		capture := mm.getCaptureByID(metricID)
+		assert.NotNil(t, capture)
 		assert.Equal(t, metricID, capture.ID)
 		assert.Equal(t, []byte(requestBody), capture.ReqBody)
 		assert.Equal(t, []byte(responseBody), capture.RespBody)
@@ -1327,54 +1315,8 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		assert.Equal(t, "header-value", capture.RespHeaders["X-Custom"])
 	})
 
-	t.Run("can keep full headers when redaction is disabled", func(t *testing.T) {
-		store, err := newMetricsStoreWithOptions(filepath.Join(t.TempDir(), "metrics.db"), 30, 100, true, true, false, allActivityFields(), testLogger)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer store.close()
-		settings := store.settings()
-		settings.CaptureRedactHeaders = false
-		if err := store.updateSettings(settings); err != nil {
-			t.Fatal(err)
-		}
-		mm := newMetricsMonitor(testLogger, 10, 5, nil, store)
-
-		requestBody := `{"model": "test", "prompt": "hello"}`
-		responseBody := `{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`
-
-		nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Set-Cookie", "session=response-secret")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(responseBody))
-			return nil
-		}
-
-		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
-		req.Header.Set("Authorization", "Bearer request-secret")
-		req.Header.Set("Cookie", "session=request-secret")
-		rec := httptest.NewRecorder()
-		ginCtx, _ := gin.CreateTestContext(rec)
-
-		err = mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
-		assert.NoError(t, err)
-
-		metrics := mm.getMetrics()
-		assert.Equal(t, 1, len(metrics))
-		captureData := mm.getCaptureByID(metrics[0].ID, true)
-		assert.NotNil(t, captureData)
-
-		var capture ReqRespCapture
-		err = json.Unmarshal(captureData, &capture)
-		assert.NoError(t, err)
-		assert.Equal(t, "Bearer request-secret", capture.ReqHeaders["Authorization"])
-		assert.Equal(t, "session=request-secret", capture.ReqHeaders["Cookie"])
-		assert.Equal(t, "session=response-secret", capture.RespHeaders["Set-Cookie"])
-	})
-
 	t.Run("does not capture when disabled", func(t *testing.T) {
-		mm := newMetricsMonitor(testLogger, 10, 0, nil)
+		mm := newMetricsMonitor(testLogger, 10, 0)
 
 		requestBody := `{"model": "test"}`
 		responseBody := `{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`
@@ -1390,7 +1332,7 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
 
-		err := mm.wrapHandler("test-model", ginCtx.Writer, req, nextHandler)
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureAll, nextHandler)
 		assert.NoError(t, err)
 
 		// Metrics should still be recorded
@@ -1398,86 +1340,168 @@ func TestMetricsMonitor_WrapHandler_Capture(t *testing.T) {
 		assert.Equal(t, 1, len(metrics))
 
 		// But no capture
-		capture := mm.getCaptureByID(metrics[0].ID, false)
-		assert.Nil(t, capture)
+		assert.Nil(t, mm.getCaptureByID(metrics[0].ID))
 	})
 }
 
-func TestMetricsMonitor_HasImageIndicators(t *testing.T) {
-	t.Run("empty body", func(t *testing.T) {
-		assert.False(t, hasImageIndicators(nil))
-		assert.False(t, hasImageIndicators([]byte{}))
+func TestMetricsMonitor_WrapHandler_PartialCaptures(t *testing.T) {
+	requestBody := `{"model": "test"}`
+	responseBody := `{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`
+
+	nextHandler := func(modelID string, w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Custom", "header-value")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(responseBody))
+		return nil
+	}
+
+	t.Run("only request headers", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureReqHeaders, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Equal(t, "application/json", capture.ReqHeaders["Content-Type"])
+		assert.Equal(t, "[REDACTED]", capture.ReqHeaders["Authorization"])
+		assert.Nil(t, capture.ReqBody)
+		assert.Nil(t, capture.RespHeaders)
+		assert.Nil(t, capture.RespBody)
 	})
 
-	t.Run("plain text without image", func(t *testing.T) {
-		assert.False(t, hasImageIndicators([]byte(`{"model": "test", "prompt": "hello"}`)))
+	t.Run("only request body", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureReqBody, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Nil(t, capture.ReqHeaders)
+		assert.Equal(t, []byte(requestBody), capture.ReqBody)
+		assert.Nil(t, capture.RespHeaders)
+		assert.Nil(t, capture.RespBody)
 	})
 
-	t.Run("llama.cpp image_data field", func(t *testing.T) {
-		body := `{"prompt": "describe", "image_data": [{"data": "base64...", "id": 10}]}`
-		assert.True(t, hasImageIndicators([]byte(body)))
+	t.Run("only response headers", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureRespHeaders, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Nil(t, capture.ReqHeaders)
+		assert.Nil(t, capture.ReqBody)
+		assert.Equal(t, "application/json", capture.RespHeaders["Content-Type"])
+		assert.Equal(t, "header-value", capture.RespHeaders["X-Custom"])
+		assert.Nil(t, capture.RespBody)
 	})
 
-	t.Run("OpenAI vision image_url", func(t *testing.T) {
-		body := `{"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]}]}`
-		assert.True(t, hasImageIndicators([]byte(body)))
+	t.Run("only response body", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureRespBody, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Nil(t, capture.ReqHeaders)
+		assert.Nil(t, capture.ReqBody)
+		assert.Nil(t, capture.RespHeaders)
+		assert.Equal(t, []byte(responseBody), capture.RespBody)
 	})
 
-	t.Run("OpenAI vision image type", func(t *testing.T) {
-		body := `{"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}]}]}`
-		assert.True(t, hasImageIndicators([]byte(body)))
+	t.Run("captureReqAll", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureReqAll, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Equal(t, "application/json", capture.ReqHeaders["Content-Type"])
+		assert.Equal(t, "[REDACTED]", capture.ReqHeaders["Authorization"])
+		assert.Equal(t, []byte(requestBody), capture.ReqBody)
+		assert.Nil(t, capture.RespHeaders)
+		assert.Nil(t, capture.RespBody)
 	})
 
-	t.Run("text-only messages", func(t *testing.T) {
-		body := `{"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]}`
-		assert.False(t, hasImageIndicators([]byte(body)))
+	t.Run("captureRespAll", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureRespAll, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Nil(t, capture.ReqHeaders)
+		assert.Nil(t, capture.ReqBody)
+		assert.Equal(t, "application/json", capture.RespHeaders["Content-Type"])
+		assert.Equal(t, "header-value", capture.RespHeaders["X-Custom"])
+		assert.Equal(t, []byte(responseBody), capture.RespBody)
 	})
 
-	t.Run("string content in messages", func(t *testing.T) {
-		body := `{"messages": [{"role": "user", "content": "hello"}]}`
-		assert.False(t, hasImageIndicators([]byte(body)))
+	t.Run("no flags", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureFields(0), nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Nil(t, capture.ReqHeaders)
+		assert.Nil(t, capture.ReqBody)
+		assert.Nil(t, capture.RespHeaders)
+		assert.Nil(t, capture.RespBody)
 	})
 
-	t.Run("image generation b64_json response", func(t *testing.T) {
-		body := `{"created": 1234567890, "data": [{"b64_json": "iVBORw0KGgo="}]}`
-		assert.True(t, hasImageIndicators([]byte(body)))
+	t.Run("mixed flags req headers and resp body", func(t *testing.T) {
+		mm := newMetricsMonitor(testLogger, 10, 100)
+		req := httptest.NewRequest("POST", "/test", bytes.NewBufferString(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+
+		err := mm.wrapHandler("test-model", ginCtx.Writer, req, captureReqHeaders|captureRespBody, nextHandler)
+		assert.NoError(t, err)
+
+		capture := mm.getCaptureByID(mm.getMetrics()[0].ID)
+		assert.NotNil(t, capture)
+		assert.Equal(t, "application/json", capture.ReqHeaders["Content-Type"])
+		assert.Equal(t, "[REDACTED]", capture.ReqHeaders["Authorization"])
+		assert.Nil(t, capture.ReqBody)
+		assert.Nil(t, capture.RespHeaders)
+		assert.Equal(t, []byte(responseBody), capture.RespBody)
 	})
-
-	t.Run("sdapi images response", func(t *testing.T) {
-		body := `{"images": ["iVBORw0KGgo="], "parameters": {}}`
-		assert.True(t, hasImageIndicators([]byte(body)))
-	})
-
-	t.Run("data url in response", func(t *testing.T) {
-		body := `{"data": [{"url": "data:image/png;base64,abc"}]}`
-		assert.True(t, hasImageIndicators([]byte(body)))
-	})
-
-	t.Run("text response without images", func(t *testing.T) {
-		body := `{"choices": [{"message": {"content": "hello"}}], "usage": {"prompt_tokens": 10}}`
-		assert.False(t, hasImageIndicators([]byte(body)))
-	})
-}
-
-func TestStreamTokenCounter_CountsTokensFromSSE(t *testing.T) {
-	tracker := newLiveActivityTracker()
-	id := tracker.Start("llama-3")
-
-	counter := newStreamTokenCounter(tracker, id)
-
-	sse := []byte(
-		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
-			"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n" +
-			"data: [DONE]\n\n",
-	)
-
-	n, err := counter.Write(sse)
-	assert.NoError(t, err)
-	assert.Equal(t, len(sse), n)
-
-	rows := tracker.Snapshot()
-	assert.Len(t, rows, 1)
-	assert.NotNil(t, rows[0].GeneratedTokens)
-	// "Hello world" = 11 chars -> 11/4 = 2 tokens (integer division)
-	assert.Equal(t, 2, *rows[0].GeneratedTokens)
 }

@@ -5,37 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mostlygeek/llama-swap/event"
-	"github.com/mostlygeek/llama-swap/proxy/config"
-	"gopkg.in/yaml.v3"
+	"github.com/mostlygeek/llama-swap/internal/event"
+	"github.com/mostlygeek/llama-swap/internal/perf"
 )
 
 type Model struct {
-	Id          string                  `json:"id"`
-	Name        string                  `json:"name"`
-	Description string                  `json:"description"`
-	State       string                  `json:"state"`
-	Unlisted    bool                    `json:"unlisted"`
-	PeerID      string                  `json:"peerID"`
-	Aliases     []string                `json:"aliases,omitempty"`
-	Memory      *LlamaCppMemorySnapshot `json:"memory,omitempty"`
-}
-
-type ModelConfiguration struct {
-	ModelID       string   `json:"modelID"`
-	Cmd           string   `json:"cmd"`
-	Proxy         string   `json:"proxy"`
-	Env           []string `json:"env,omitempty"`
-	CheckEndpoint string   `json:"checkEndpoint"`
-	TTL           int      `json:"ttl"`
-	YAML          string   `json:"yaml"`
+	Id          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	State       string   `json:"state"`
+	Unlisted    bool     `json:"unlisted"`
+	PeerID      string   `json:"peerID"`
+	Aliases     []string `json:"aliases,omitempty"`
 }
 
 func addApiHandlers(pm *ProxyManager) {
@@ -43,17 +30,13 @@ func addApiHandlers(pm *ProxyManager) {
 	// Protected with API key authentication
 	apiGroup := pm.ginEngine.Group("/api", pm.apiKeyAuth())
 	{
-		apiGroup.GET("/models/config/*model", pm.apiGetModelConfig)
 		apiGroup.POST("/models/unload", pm.apiUnloadAllModels)
 		apiGroup.POST("/models/unload/*model", pm.apiUnloadSingleModelHandler)
 		apiGroup.GET("/events", pm.apiSendEvents)
 		apiGroup.GET("/metrics", pm.apiGetMetrics)
-		apiGroup.GET("/settings/persistence", pm.apiGetPersistenceSettings)
-		apiGroup.PUT("/settings/persistence", pm.apiUpdatePersistenceSettings)
+		apiGroup.GET("/performance", pm.apiGetPerformance)
 		apiGroup.GET("/version", pm.apiGetVersion)
 		apiGroup.GET("/captures/:id", pm.apiGetCapture)
-		apiGroup.GET("/activity/live/:id/stream", pm.apiLiveTokenStream)
-		apiGroup.POST("/activity/:id/cancel", pm.apiCancelActivity)
 	}
 }
 
@@ -85,18 +68,14 @@ func (pm *ProxyManager) getModelStatus() []Model {
 				process = processGroup.processes[modelID]
 			}
 		}
-		var memory *LlamaCppMemorySnapshot
 		if process != nil {
 			switch process.CurrentState() {
 			case StateReady:
 				state = "ready"
-				memory = process.MemorySnapshot()
 			case StateStarting:
 				state = "starting"
-				memory = process.MemorySnapshot()
 			case StateStopping:
 				state = "stopping"
-				memory = process.MemorySnapshot()
 			case StateShutdown:
 				state = "shutdown"
 			case StateStopped:
@@ -110,7 +89,6 @@ func (pm *ProxyManager) getModelStatus() []Model {
 			State:       state,
 			Unlisted:    pm.config.Models[modelID].Unlisted,
 			Aliases:     pm.config.Models[modelID].Aliases,
-			Memory:      memory,
 		})
 	}
 
@@ -132,11 +110,10 @@ func (pm *ProxyManager) getModelStatus() []Model {
 type messageType string
 
 const (
-	msgTypeModelStatus  messageType = "modelStatus"
-	msgTypeLogData      messageType = "logData"
-	msgTypeMetrics      messageType = "metrics"
-	msgTypeInFlight     messageType = "inflight"
-	msgTypeActivityLive messageType = "activityLive"
+	msgTypeModelStatus messageType = "modelStatus"
+	msgTypeLogData     messageType = "logData"
+	msgTypeMetrics     messageType = "metrics"
+	msgTypeInFlight    messageType = "inflight"
 )
 
 type messageEnvelope struct {
@@ -184,12 +161,8 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 		}
 	}
 
-	sendMetrics := func(metrics []TokenMetrics) {
-		filtered := pm.filterExcludedMetrics(metrics)
-		if len(filtered) == 0 {
-			return
-		}
-		jsonData, err := json.Marshal(filtered)
+	sendMetrics := func(metrics []ActivityLogEntry) {
+		jsonData, err := json.Marshal(metrics)
 		if err == nil {
 			select {
 			case sendBuffer <- messageEnvelope{Type: msgTypeMetrics, Data: string(jsonData)}:
@@ -205,18 +178,6 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 		if err == nil {
 			select {
 			case sendBuffer <- messageEnvelope{Type: msgTypeInFlight, Data: string(jsonData)}:
-			case <-ctx.Done():
-				return
-			default:
-			}
-		}
-	}
-
-	sendLiveActivity := func(rows []LiveActivityRow) {
-		jsonData, err := json.Marshal(rows)
-		if err == nil {
-			select {
-			case sendBuffer <- messageEnvelope{Type: msgTypeActivityLive, Data: string(jsonData)}:
 			case <-ctx.Done():
 				return
 			default:
@@ -247,8 +208,8 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 	/**
 	 * Send Metrics data
 	 */
-	defer event.On(func(e TokenMetricsEvent) {
-		sendMetrics([]TokenMetrics{e.Metrics})
+	defer event.On(func(e ActivityLogEvent) {
+		sendMetrics([]ActivityLogEntry{e.Metrics})
 	})()
 
 	/**
@@ -258,22 +219,12 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 		sendInFlight(e.Total)
 	})()
 
-	/**
-	 * Send live activity rows with prompt processing progress.
-	 */
-	defer event.On(func(e LiveActivityEvent) {
-		sendLiveActivity(e.Rows)
-	})()
-
 	// send initial batch of data
 	sendLogData("proxy", pm.proxyLogger.GetHistory())
 	sendLogData("upstream", pm.upstreamLogger.GetHistory())
 	sendModels()
 	sendMetrics(pm.metricsMonitor.getMetrics())
 	sendInFlight(pm.inFlightCounter.Current())
-	if pm.liveActivity != nil {
-		sendLiveActivity(pm.liveActivity.Snapshot())
-	}
 
 	for {
 		select {
@@ -291,224 +242,62 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 }
 
 func (pm *ProxyManager) apiGetMetrics(c *gin.Context) {
-	rangeName := strings.TrimSpace(c.Query("range"))
-	if rangeName == "" || rangeName == "realtime" {
-		metrics := pm.filterExcludedMetrics(pm.metricsMonitor.getMetrics())
-		jsonData, err := json.Marshal(metrics)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
-			return
-		}
-		c.Header("X-Metrics-Range", "realtime")
-		c.Header("X-Metrics-Truncated", "false")
-		c.Data(http.StatusOK, "application/json", jsonData)
-		return
-	}
-
-	query, normalizedRange, err := pm.parseMetricsRangeQuery(c)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	metrics, truncated, err := pm.metricsMonitor.getMetricsForRange(query)
+	jsonData, err := pm.metricsMonitor.getMetricsJSON()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
 		return
 	}
-	jsonData, err := json.Marshal(pm.filterExcludedMetrics(metrics))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
-		return
-	}
-	c.Header("X-Metrics-Range", normalizedRange)
-	c.Header("X-Metrics-Truncated", strconv.FormatBool(truncated))
 	c.Data(http.StatusOK, "application/json", jsonData)
 }
 
-func (pm *ProxyManager) excludeModelFromMetrics(modelID string) bool {
-	modelConfig, found := pm.config.Models[modelID]
-	return found && modelConfig.ExcludeFromMetrics
+func (pm *ProxyManager) prometheusMetricsHandler(c *gin.Context) {
+	if pm.perfMonitor == nil {
+		c.String(http.StatusServiceUnavailable, "# performance monitor not available\n")
+		return
+	}
+	pm.perfMonitor.MetricsHandler().ServeHTTP(c.Writer, c.Request)
 }
 
-func (pm *ProxyManager) filterExcludedMetrics(metrics []TokenMetrics) []TokenMetrics {
-	if len(metrics) == 0 {
-		return metrics
+func (pm *ProxyManager) apiGetPerformance(c *gin.Context) {
+	if pm.perfMonitor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "performance monitor not available"})
+		return
 	}
 
-	filtered := make([]TokenMetrics, 0, len(metrics))
-	excluded := false
-	for _, metric := range metrics {
-		if pm.excludeModelFromMetrics(metric.Model) {
-			excluded = true
-			continue
-		}
-		filtered = append(filtered, metric)
-	}
-	if !excluded {
-		return metrics
-	}
-	return filtered
-}
+	sysStats, gpuStats := pm.perfMonitor.Current()
 
-func (pm *ProxyManager) parseMetricsRangeQuery(c *gin.Context) (metricsQuery, string, error) {
-	limit := metricsLimit(c.Query("limit"), pm.config.MetricsQueryMaxRows)
-	now := time.Now()
-	rangeName := strings.ToLower(strings.TrimSpace(c.Query("range")))
-	scope := strings.ToLower(strings.TrimSpace(c.Query("scope")))
-	if scope != "" && scope != "usage" && scope != "activity" {
-		return metricsQuery{}, "", fmt.Errorf("unsupported metrics scope %q", scope)
-	}
-	query := metricsQuery{Limit: limit, Scope: scope}
-
-	setFrom := func(duration time.Duration) {
-		from := now.Add(-duration)
-		query.From = &from
-	}
-
-	switch rangeName {
-	case "5m", "past_5m", "past-5m", "past_5min", "past-5min":
-		setFrom(5 * time.Minute)
-		return query, "5m", nil
-	case "10m", "past_10m", "past-10m", "past_10min", "past-10min":
-		setFrom(10 * time.Minute)
-		return query, "10m", nil
-	case "1h", "past_1h", "past-1h", "past_hour":
-		setFrom(time.Hour)
-		return query, "1h", nil
-	case "8h", "past_8h", "past-8h":
-		setFrom(8 * time.Hour)
-		return query, "8h", nil
-	case "1d", "24h", "day", "past_day":
-		setFrom(24 * time.Hour)
-		return query, "1d", nil
-	case "1w", "week", "past_week":
-		setFrom(7 * 24 * time.Hour)
-		return query, "1w", nil
-	case "1mo", "month", "past_month":
-		setFrom(30 * 24 * time.Hour)
-		return query, "1mo", nil
-	case "all":
-		return query, "all", nil
-	case "custom":
-		from, hasFrom, err := parseMetricRangeTime(c.Query("from"))
+	var after time.Time
+	if afterStr := c.Query("after"); afterStr != "" {
+		ts, err := time.Parse(time.RFC3339, afterStr)
 		if err != nil {
-			return metricsQuery{}, "", fmt.Errorf("invalid from: %w", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'after' timestamp, use RFC3339 format"})
+			return
 		}
-		to, hasTo, err := parseMetricRangeTime(c.Query("to"))
-		if err != nil {
-			return metricsQuery{}, "", fmt.Errorf("invalid to: %w", err)
+		after = ts
+	}
+
+	if !after.IsZero() {
+		filtered := make([]perf.SysStat, 0, len(sysStats))
+		for _, s := range sysStats {
+			if s.Timestamp.After(after) {
+				filtered = append(filtered, s)
+			}
 		}
-		if !hasFrom && !hasTo {
-			return metricsQuery{}, "", fmt.Errorf("custom range requires from or to")
+		sysStats = filtered
+
+		filteredGpu := make([]perf.GpuStat, 0, len(gpuStats))
+		for _, g := range gpuStats {
+			if g.Timestamp.After(after) {
+				filteredGpu = append(filteredGpu, g)
+			}
 		}
-		if hasFrom {
-			query.From = &from
-		}
-		if hasTo {
-			query.To = &to
-		}
-		if hasFrom && hasTo && from.After(to) {
-			return metricsQuery{}, "", fmt.Errorf("from must be before to")
-		}
-		return query, "custom", nil
-	default:
-		return metricsQuery{}, "", fmt.Errorf("unsupported metrics range %q", rangeName)
-	}
-}
-
-func metricsLimit(value string, configuredMax int) int {
-	if configuredMax <= 0 {
-		configuredMax = defaultMetricsQueryMaxRows
-	}
-	if strings.TrimSpace(value) == "" {
-		return configuredMax
+		gpuStats = filteredGpu
 	}
 
-	limit, err := strconv.Atoi(value)
-	if err != nil || limit <= 0 {
-		return configuredMax
-	}
-	if limit > configuredMax {
-		return configuredMax
-	}
-	return limit
-}
-
-func parseMetricRangeTime(value string) (time.Time, bool, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return time.Time{}, false, nil
-	}
-
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		return parsed, true, nil
-	}
-
-	unixValue, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	if unixValue > 1_000_000_000_000 {
-		return time.UnixMilli(unixValue), true, nil
-	}
-	return time.Unix(unixValue, 0), true, nil
-}
-
-func (pm *ProxyManager) apiGetPersistenceSettings(c *gin.Context) {
-	settings := pm.persistenceSettingsWithYAMLPriority()
-	c.JSON(http.StatusOK, settings)
-}
-
-func (pm *ProxyManager) apiUpdatePersistenceSettings(c *gin.Context) {
-	var settings persistenceSettings
-	if err := c.ShouldBindJSON(&settings); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid persistence settings"})
-		return
-	}
-	if strings.TrimSpace(settings.DBPath) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "db_path is required"})
-		return
-	}
-	settings.DBPath = resolveMetricsDBPath(pm.config, settings.DBPath)
-	settings = normalizePersistenceSettings(settings)
-
-	update, _, err := pm.metricsMonitor.stagePersistenceSettings(settings)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
-		return
-	}
-	defer update.close()
-
-	if err := pm.writePersistenceSettingsToYAML(settings); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	updated, err := update.commit()
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
-		return
-	}
-	pm.applyPersistenceSettingsToConfig(updated)
-	pm.applyLoggingEnabled(updated.LoggingEnabled)
-	pm.metricsMonitor.setYAMLConflicts(nil)
-	updated.YAMLAvailable = true
-	updated.YAMLPath = pm.config.ConfigPath
-	updated.Stats = pm.metricsMonitor.persistenceSettings().Stats
-	c.JSON(http.StatusOK, updated)
-}
-
-func (pm *ProxyManager) applyLoggingEnabled(enabled bool) {
-	if pm.proxyLogger != nil {
-		pm.proxyLogger.SetEnabled(enabled)
-	}
-	if pm.upstreamLogger != nil {
-		pm.upstreamLogger.SetEnabled(enabled)
-	}
-	if pm.muxLogger != nil {
-		pm.muxLogger.SetEnabled(enabled)
-	}
+	c.JSON(http.StatusOK, gin.H{
+		"sys_stats": sysStats,
+		"gpu_stats": gpuStats,
+	})
 }
 
 func (pm *ProxyManager) apiUnloadSingleModelHandler(c *gin.Context) {
@@ -538,87 +327,6 @@ func (pm *ProxyManager) apiUnloadSingleModelHandler(c *gin.Context) {
 	c.String(http.StatusOK, "OK")
 }
 
-func (pm *ProxyManager) apiGetModelConfig(c *gin.Context) {
-	requestedModel := strings.TrimPrefix(c.Param("model"), "/")
-	realModelName, found := pm.config.RealModelName(requestedModel)
-	if !found {
-		pm.sendErrorResponse(c, http.StatusNotFound, "Model not found")
-		return
-	}
-
-	modelConfig := pm.config.Models[realModelName]
-	c.JSON(http.StatusOK, ModelConfiguration{
-		ModelID:       realModelName,
-		Cmd:           modelConfig.Cmd,
-		Proxy:         modelConfig.Proxy,
-		Env:           modelConfig.Env,
-		CheckEndpoint: modelConfig.CheckEndpoint,
-		TTL:           modelConfig.UnloadAfter,
-		YAML:          pm.modelConfigYAML(realModelName, modelConfig),
-	})
-}
-
-func (pm *ProxyManager) modelConfigYAML(modelID string, modelConfig config.ModelConfig) string {
-	if rawYAML, err := pm.rawModelConfigYAML(modelID); err == nil && rawYAML != "" {
-		return rawYAML
-	}
-
-	data, err := yaml.Marshal(modelConfig)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
-func (pm *ProxyManager) rawModelConfigYAML(modelID string) (string, error) {
-	if strings.TrimSpace(pm.config.ConfigPath) == "" {
-		return "", nil
-	}
-
-	data, err := os.ReadFile(pm.config.ConfigPath)
-	if err != nil {
-		return "", err
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return "", err
-	}
-	if len(root.Content) == 0 {
-		return "", nil
-	}
-
-	document := root.Content[0]
-	if document.Kind != yaml.MappingNode {
-		return "", nil
-	}
-
-	for i := 0; i+1 < len(document.Content); i += 2 {
-		if document.Content[i].Value != "models" {
-			continue
-		}
-
-		modelsNode := document.Content[i+1]
-		if modelsNode.Kind != yaml.MappingNode {
-			return "", nil
-		}
-
-		for j := 0; j+1 < len(modelsNode.Content); j += 2 {
-			if modelsNode.Content[j].Value != modelID {
-				continue
-			}
-
-			data, err := yaml.Marshal(modelsNode.Content[j+1])
-			if err != nil {
-				return "", err
-			}
-			return strings.TrimSpace(string(data)), nil
-		}
-	}
-
-	return "", nil
-}
-
 func (pm *ProxyManager) apiGetVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]string{
 		"version":    pm.version,
@@ -635,112 +343,16 @@ func (pm *ProxyManager) apiGetCapture(c *gin.Context) {
 		return
 	}
 
-	data, exists := pm.metricsMonitor.getCompressedBytes(id)
-	if !exists {
+	capture := pm.metricsMonitor.getCaptureByID(id)
+	if capture == nil || (capture.ReqPath == "" && capture.ReqHeaders == nil && capture.ReqBody == nil && capture.RespHeaders == nil && capture.RespBody == nil) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "capture not found"})
 		return
 	}
 
-	c.Header("Vary", "Accept-Encoding")
-
-	// ¯\_(ツ)_/¯ quality weights are too fancy for us anyway
-	hasZstd := strings.Contains(c.GetHeader("Accept-Encoding"), "zstd")
-
-	if hasZstd {
-		c.Header("Content-Encoding", "zstd")
-		c.Data(http.StatusOK, "application/json", data)
-	} else {
-		decompressed, err := decompressCapture(data)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decompress capture"})
-			return
-		}
-		c.Data(http.StatusOK, "application/json", decompressed)
-	}
-}
-
-func (pm *ProxyManager) apiLiveTokenStream(c *gin.Context) {
-	id := c.Param("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+	jsonBytes, err := json.Marshal(capture)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal capture"})
 		return
 	}
-
-	if pm.liveActivity == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "live activity tracking unavailable"})
-		return
-	}
-
-	ts := pm.liveActivity.GetTokenStream(id)
-	if ts == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "stream not found"})
-		return
-	}
-
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	// Send accumulated chunks immediately
-	chunks, closed := ts.snapshot()
-	for _, chunk := range chunks {
-		data, err := json.Marshal(chunk)
-		if err != nil {
-			continue
-		}
-		c.SSEvent("message", string(data))
-		c.Writer.Flush()
-	}
-
-	if closed {
-		c.SSEvent("message", `{"done":true}`)
-		c.Writer.Flush()
-		return
-	}
-
-	// Stream new chunks as they arrive
-	waiter := ts.addWaiter()
-	defer ts.removeWaiter(waiter)
-
-	for {
-		select {
-		case <-c.Request.Context().Done():
-			return
-		case <-pm.shutdownCtx.Done():
-			return
-		case chunk, ok := <-waiter:
-			if !ok {
-				c.SSEvent("message", `{"done":true}`)
-				c.Writer.Flush()
-				return
-			}
-			data, err := json.Marshal(chunk)
-			if err != nil {
-				continue
-			}
-			c.SSEvent("message", string(data))
-			c.Writer.Flush()
-		}
-	}
-}
-
-func (pm *ProxyManager) apiCancelActivity(c *gin.Context) {
-	id := c.Param("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
-		return
-	}
-
-	if pm.metricsMonitor == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metrics monitor unavailable"})
-		return
-	}
-
-	if pm.metricsMonitor.cancelRequest(id) {
-		c.JSON(http.StatusOK, gin.H{"cancelled": true})
-		return
-	}
-
-	c.JSON(http.StatusNotFound, gin.H{"error": "request not found or already completed"})
+	c.Data(http.StatusOK, "application/json", jsonBytes)
 }

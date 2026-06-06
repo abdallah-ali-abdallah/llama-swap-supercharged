@@ -2,218 +2,327 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
-	"github.com/gin-gonic/gin"
-	"github.com/mostlygeek/llama-swap/event"
-	"github.com/mostlygeek/llama-swap/proxy"
-	"github.com/mostlygeek/llama-swap/proxy/config"
+	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/mostlygeek/llama-swap/internal/event"
+	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/mostlygeek/llama-swap/internal/perf"
+	"github.com/mostlygeek/llama-swap/internal/process"
+	"github.com/mostlygeek/llama-swap/internal/server"
+	"github.com/mostlygeek/llama-swap/internal/shared"
+	"github.com/mostlygeek/llama-swap/internal/watcher"
 )
 
 var (
-	version string = "0"
-	commit  string = "abcd1234"
-	date    string = "unknown"
+	version = "0"
+	commit  = "abcd1234"
+	date    = "unknown"
 )
 
+const shutdownTimeout = 30 * time.Second
+
+// logTimeFormats maps the cfg.LogTimeFormat value to a Go time layout. An
+// unset or unrecognised value yields "" — no timestamp prefix.
+var logTimeFormats = map[string]string{
+	"ansic":       time.ANSIC,
+	"unixdate":    time.UnixDate,
+	"rubydate":    time.RubyDate,
+	"rfc822":      time.RFC822,
+	"rfc822z":     time.RFC822Z,
+	"rfc850":      time.RFC850,
+	"rfc1123":     time.RFC1123,
+	"rfc1123z":    time.RFC1123Z,
+	"rfc3339":     time.RFC3339,
+	"rfc3339nano": time.RFC3339Nano,
+	"kitchen":     time.Kitchen,
+	"stamp":       time.Stamp,
+	"stampmilli":  time.StampMilli,
+	"stampmicro":  time.StampMicro,
+	"stampnano":   time.StampNano,
+}
+
 func main() {
-	// Define a command-line flag for the port
-	configPath := flag.String("config", "config.yaml", "config file name")
-	listenStr := flag.String("listen", "", "listen ip/port")
-	certFile := flag.String("tls-cert-file", "", "TLS certificate file")
-	keyFile := flag.String("tls-key-file", "", "TLS key file")
-	showVersion := flag.Bool("version", false, "show version of build")
-	watchConfig := flag.Bool("watch-config", false, "Automatically reload config file on change")
+	flagConfig := flag.String("config", "", "path to config file (required)")
+	flagListen := flag.String("listen", "", "listen address (default :8080 or :8443 for TLS)")
+	flagCertFile := flag.String("tls-cert-file", "", "TLS certificate file")
+	flagKeyFile := flag.String("tls-key-file", "", "TLS key file")
+	flagVersion := flag.Bool("version", false, "show version and exit")
+	flagWatchConfig := flag.Bool("watch-config", false, "reload config on file change")
+	flag.Parse()
 
-	flag.Parse() // Parse the command-line flags
-
-	if *showVersion {
+	if *flagVersion {
 		fmt.Printf("version: %s (%s), built at %s\n", version, commit, date)
 		os.Exit(0)
 	}
 
-	conf, err := config.LoadConfig(*configPath)
-	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
+	if *flagConfig == "" {
+		slog.Error("-config is required")
 		os.Exit(1)
 	}
 
-	if len(conf.Profiles) > 0 {
-		fmt.Println("WARNING: Profile functionality has been removed in favor of Groups. See the README for more information.")
-	}
-
-	if mode := os.Getenv("GIN_MODE"); mode != "" {
-		gin.SetMode(mode)
-	} else {
-		gin.SetMode(gin.ReleaseMode)
-	}
-
-	// Validate TLS flags.
-	var useTLS = (*certFile != "" && *keyFile != "")
-	if (*certFile != "" && *keyFile == "") ||
-		(*certFile == "" && *keyFile != "") {
-		fmt.Println("Error: Both --tls-cert-file and --tls-key-file must be provided for TLS.")
+	useTLS := *flagCertFile != "" || *flagKeyFile != ""
+	if (*flagCertFile != "" && *flagKeyFile == "") || (*flagCertFile == "" && *flagKeyFile != "") {
+		slog.Error("both -tls-cert-file and -tls-key-file must be provided for TLS")
 		os.Exit(1)
 	}
 
-	// Set default ports.
-	if *listenStr == "" {
-		defaultPort := ":8080"
+	listenAddr := *flagListen
+	if listenAddr == "" {
 		if useTLS {
-			defaultPort = ":8443"
-		}
-		listenStr = &defaultPort
-	}
-
-	// Setup channels for server management
-	exitChan := make(chan struct{})
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Create server with initial handler
-	srv := &http.Server{
-		Addr: *listenStr,
-	}
-
-	// Support for watching config and reloading when it changes
-	reloadProxyManager := func() {
-		if currentPM, ok := srv.Handler.(*proxy.ProxyManager); ok {
-			conf, err = config.LoadConfig(*configPath)
-			if err != nil {
-				fmt.Printf("Warning, unable to reload configuration: %v\n", err)
-				return
-			}
-
-			fmt.Println("Configuration Changed")
-			currentPM.Shutdown()
-			newPM := proxy.New(conf)
-			newPM.SetVersion(date, commit, version)
-			srv.Handler = newPM
-			fmt.Println("Configuration Reloaded")
-
-			// wait a few seconds and tell any UI to reload
-			time.AfterFunc(3*time.Second, func() {
-				event.Emit(proxy.ConfigFileChangedEvent{
-					ReloadingState: proxy.ReloadingStateEnd,
-				})
-			})
+			listenAddr = ":8443"
 		} else {
-			conf, err = config.LoadConfig(*configPath)
-			if err != nil {
-				fmt.Printf("Error, unable to load configuration: %v\n", err)
-				os.Exit(1)
-			}
-			newPM := proxy.New(conf)
-			newPM.SetVersion(date, commit, version)
-			srv.Handler = newPM
+			listenAddr = ":8080"
 		}
 	}
 
-	// load the initial proxy manager
-	reloadProxyManager()
-	debouncedReload := debounce(time.Second, reloadProxyManager)
-	if *watchConfig {
-		defer event.On(func(e proxy.ConfigFileChangedEvent) {
-			if e.ReloadingState == proxy.ReloadingStateStart {
-				debouncedReload()
-			}
-		})()
+	configPath := *flagConfig
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("failed to load config", "path", configPath, "error", err)
+		os.Exit(1)
+	}
 
-		fmt.Println("Watching Configuration for changes")
+	// Loggers are wired per cfg.LogToStdout: proxy/upstream feed muxLog, which
+	// owns the combined history served by /logs. They outlive config reloads,
+	// so a LogToStdout change requires a restart to take effect.
+	muxLog, proxyLog, upstreamLog := server.NewLoggers(cfg.LogToStdout)
+
+	if len(cfg.Profiles) > 0 {
+		proxyLog.Warn("Profile functionality has been removed in favor of Groups. See the README for more information.")
+	}
+
+	applyLogSettings := func(cfg config.Config) {
+		level := logmon.LevelInfo
+		switch strings.ToLower(strings.TrimSpace(cfg.LogLevel)) {
+		case "debug":
+			level = logmon.LevelDebug
+		case "warn":
+			level = logmon.LevelWarn
+		case "error":
+			level = logmon.LevelError
+		}
+		timeFormat := logTimeFormats[strings.ToLower(strings.TrimSpace(cfg.LogTimeFormat))]
+		for _, lg := range []*logmon.Monitor{proxyLog, upstreamLog} {
+			lg.SetLogLevel(level)
+			lg.SetLogTimeFormat(timeFormat)
+		}
+	}
+
+	applyLogSettings(cfg)
+	proxyLog.Debugf("PID: %d", os.Getpid())
+
+	// On Windows, bind the process tree to a Job Object so every upstream
+	// process is reaped when llama-swap exits — even on a forced kill. No-op
+	// elsewhere. Non-fatal: a failure just falls back to per-process teardown.
+	if err := process.SetupTreeCleanup(); err != nil {
+		proxyLog.Warnf("failed to set up process tree cleanup: %v", err)
+	}
+
+	// perfMon outlives config reloads; its config is updated in place.
+	var perfMon *perf.Monitor
+	if !cfg.Performance.Disabled {
+		perfMon, err = perf.New(cfg.Performance, proxyLog)
+		if err != nil {
+			slog.Error("failed to create performance monitor", "error", err)
+			os.Exit(1)
+		}
+		perfMon.Start()
+	} else {
+		proxyLog.Info("performance monitoring is disabled")
+	}
+
+	buildInfo := server.BuildInfo{Version: version, Commit: commit, Date: date}
+
+	initialSrv, err := server.New(cfg, muxLog, proxyLog, upstreamLog, perfMon, buildInfo)
+	if err != nil {
+		slog.Error("failed to create server", "error", err)
+		os.Exit(1)
+	}
+
+	// activeSrv is swapped atomically during hot reload.
+	var activeMu sync.RWMutex
+	activeSrv := initialSrv
+
+	httpServer := &http.Server{
+		Addr: listenAddr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			activeMu.RLock()
+			srv := activeSrv
+			activeMu.RUnlock()
+			srv.ServeHTTP(w, r)
+		}),
+	}
+
+	// reload guards against overlapping reloads triggered by concurrent signals
+	// or file-watcher callbacks.
+	var reloading bool
+	var reloadMu sync.Mutex
+
+	reload := func() {
+		reloadMu.Lock()
+		if reloading {
+			reloadMu.Unlock()
+			return
+		}
+		reloading = true
+		reloadMu.Unlock()
+		defer func() {
+			reloadMu.Lock()
+			reloading = false
+			reloadMu.Unlock()
+		}()
+
+		proxyLog.Info("reloading configuration")
+
+		newCfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			proxyLog.Warnf("failed to reload config: %v", err)
+			return
+		}
+
+		if len(newCfg.Profiles) > 0 {
+			proxyLog.Warn("Profile functionality has been removed in favor of Groups. See the README for more information.")
+		}
+
+		if perfMon != nil {
+			perfMon.UpdateConfig(newCfg.Performance)
+		}
+
+		newSrv, err := server.New(newCfg, muxLog, proxyLog, upstreamLog, perfMon, buildInfo)
+		if err != nil {
+			proxyLog.Warnf("failed to build new server during reload: %v", err)
+			return
+		}
+
+		activeMu.Lock()
+		old := activeSrv
+		activeSrv = newSrv
+		activeMu.Unlock()
+
+		applyLogSettings(newCfg)
+
+		if err := old.Shutdown(shutdownTimeout); err != nil {
+			proxyLog.Warnf("error shutting down old server during reload: %v", err)
+		}
+
+		// Notify UI after a short delay so it can refresh model state.
+		time.AfterFunc(3*time.Second, func() {
+			event.Emit(shared.ConfigFileChangedEvent{State: shared.ReloadingStateEnd})
+		})
+
+		proxyLog.Info("configuration reloaded")
+	}
+
+	watcherCtx, watcherCancel := context.WithCancel(context.Background())
+	defer watcherCancel()
+
+	if *flagWatchConfig {
+		absConfigPath, err := filepath.Abs(configPath)
+		if err != nil {
+			slog.Error("watch-config: failed to resolve config path", "error", err)
+			os.Exit(1)
+		}
+		proxyLog.Info("watching configuration for changes (poll-based, 2s interval)")
 		go func() {
-			absConfigPath, err := filepath.Abs(*configPath)
-			if err != nil {
-				fmt.Printf("Error getting absolute path for watching config file: %v\n", err)
-				return
-			}
-			watcher, err := fsnotify.NewWatcher()
-			if err != nil {
-				fmt.Printf("Error creating file watcher: %v. File watching disabled.\n", err)
-				return
-			}
-
-			configDir := filepath.Dir(absConfigPath)
-			err = watcher.Add(configDir)
-			if err != nil {
-				fmt.Printf("Error adding config path directory (%s) to watcher: %v. File watching disabled.", configDir, err)
-				return
-			}
-
-			defer watcher.Close()
-			for {
-				select {
-				case changeEvent := <-watcher.Events:
-					if changeEvent.Name == absConfigPath && (changeEvent.Has(fsnotify.Write) || changeEvent.Has(fsnotify.Create) || changeEvent.Has(fsnotify.Remove)) {
-						event.Emit(proxy.ConfigFileChangedEvent{
-							ReloadingState: proxy.ReloadingStateStart,
-						})
-					} else if changeEvent.Name == filepath.Join(configDir, "..data") && changeEvent.Has(fsnotify.Create) {
-						// the change for k8s configmap
-						event.Emit(proxy.ConfigFileChangedEvent{
-							ReloadingState: proxy.ReloadingStateStart,
-						})
-					}
-
-				case err := <-watcher.Errors:
-					log.Printf("File watcher error: %v", err)
-				}
-			}
+			(&configwatcher.Watcher{
+				Path:     absConfigPath,
+				Interval: configwatcher.DefaultInterval,
+				OnChange: reload,
+			}).Run(watcherCtx)
 		}()
 	}
 
-	// shutdown on signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
 	go func() {
-		sig := <-sigChan
-		fmt.Printf("Received signal %v, shutting down...\n", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
-
-		if pm, ok := srv.Handler.(*proxy.ProxyManager); ok {
-			pm.Shutdown()
-		} else {
-			fmt.Println("srv.Handler is not of type *proxy.ProxyManager")
-		}
-
-		if err := srv.Shutdown(ctx); err != nil {
-			fmt.Printf("Server shutdown error: %v\n", err)
-		}
-		close(exitChan)
-	}()
-
-	// Start server
-	go func() {
-		var err error
+		var startErr error
 		if useTLS {
-			fmt.Printf("llama-swap listening with TLS on https://%s\n", *listenStr)
-			err = srv.ListenAndServeTLS(*certFile, *keyFile)
+			proxyLog.Infof("llama-swap listening with TLS on https://%s", listenAddr)
+			startErr = httpServer.ListenAndServeTLS(*flagCertFile, *flagKeyFile)
 		} else {
-			fmt.Printf("llama-swap listening on http://%s\n", *listenStr)
-			err = srv.ListenAndServe()
+			proxyLog.Infof("llama-swap listening on http://%s", listenAddr)
+			startErr = httpServer.ListenAndServe()
 		}
-		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Fatal server error: %v\n", err)
+		if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
+			slog.Error("http server error", "error", startErr)
+			os.Exit(1)
 		}
 	}()
 
-	// Wait for exit signal
-	<-exitChan
-}
+	exitChan := make(chan struct{})
 
-func debounce(interval time.Duration, f func()) func() {
-	var timer *time.Timer
-	return func() {
-		if timer != nil {
-			timer.Stop()
+	go func() {
+		for {
+			sig := <-sigChan
+			switch sig {
+			case syscall.SIGHUP:
+				proxyLog.Info("received SIGHUP, reloading config")
+				go reload()
+			case syscall.SIGINT, syscall.SIGTERM:
+				proxyLog.Infof("received signal %v, shutting down", sig)
+				watcherCancel()
+
+				// Backstop against a stalled shutdown: force the process to
+				// exit once the whole graceful sequence has had its full budget.
+				// On Windows the Job Object reaps upstream processes on exit, so
+				// a forced exit still cleans up rather than orphaning children.
+				go func() {
+					time.Sleep(shutdownTimeout + 5*time.Second)
+					proxyLog.Warnf("graceful shutdown exceeded %v, forcing exit", shutdownTimeout)
+					os.Exit(1)
+				}()
+
+				activeMu.RLock()
+				srv := activeSrv
+				activeMu.RUnlock()
+
+				// Close long-lived SSE streams first so httpServer.Shutdown can
+				// drain without blocking on them for the full timeout.
+				srv.CloseStreams()
+
+				// Both phases share a single deadline so total shutdown is
+				// bounded by shutdownTimeout rather than 2x it.
+				deadline := time.Now().Add(shutdownTimeout)
+				shutdownCtx, cancel := context.WithDeadline(context.Background(), deadline)
+				defer cancel()
+				if err := httpServer.Shutdown(shutdownCtx); err != nil {
+					proxyLog.Warnf("http server shutdown error: %v", err)
+				}
+
+				// Clamp the remaining budget to a small positive value: a
+				// non-positive timeout makes the router fall back to its own
+				// healthCheckTimeout, which would defeat the shared deadline.
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					remaining = time.Millisecond
+				}
+				if err := srv.Shutdown(remaining); err != nil {
+					proxyLog.Warnf("router shutdown error: %v", err)
+				}
+
+				if perfMon != nil {
+					perfMon.Stop()
+				}
+
+				close(exitChan)
+				return
+			}
 		}
-		timer = time.AfterFunc(interval, f)
-	}
+	}()
+
+	<-exitChan
+	proxyLog.Info("shutdown complete")
 }

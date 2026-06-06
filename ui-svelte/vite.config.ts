@@ -22,17 +22,19 @@ export default defineConfig({
   ],
   base: "/ui/",
   build: {
-    outDir: "../proxy/ui_dist",
+    outDir: "../internal/server/ui_dist",
     assetsDir: "assets",
   },
   server: {
-    proxy: {
-      "/api": "http://localhost:8080", // Proxy API calls to Go backend during development
-      "/logs": "http://localhost:8080",
-      "/upstream": "http://localhost:8080",
-      "/unload": "http://localhost:8080",
-      "/v1": "http://localhost:8080",
-      "/sdapi": "http://localhost:8080",
-    },
+    // yes very insecure but who's running this thing
+    // on the public internet for dev?! haha.
+    host: "0.0.0.0",
+    allowedHosts: true,
+    proxy: Object.fromEntries(
+      ["/api", "/logs", "/upstream", "/unload", "/v1", "/sdapi"].map((path) => [
+        path,
+        process.env.LLAMA_SWAP_URL ?? "http://localhost:8080",
+      ]),
+    ),
   },
 });

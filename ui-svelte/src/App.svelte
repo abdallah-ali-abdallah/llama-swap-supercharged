@@ -7,10 +7,11 @@
   import Dashboard from "./routes/Dashboard.svelte";
   import Activity from "./routes/Activity.svelte";
   import Settings from "./routes/Settings.svelte";
+  import Performance from "./routes/Performance.svelte";
   import Playground from "./routes/Playground.svelte";
   import PlaygroundStub from "./routes/PlaygroundStub.svelte";
   import { enableAPIEvents } from "./stores/api";
-  import { initScreenWidth, isDarkMode, appTitle, connectionState } from "./stores/theme";
+  import { initScreenWidth, initSystemThemeListener, isDarkMode, appTitle, connectionState } from "./stores/theme";
   import { currentRoute } from "./stores/route";
 
   const routes = {
@@ -21,6 +22,7 @@
     "/logs": LogViewer,
     "/activity": Activity,
     "/settings": Settings,
+    "/performance": Performance,
     "*": PlaygroundStub,
   };
 
@@ -40,10 +42,12 @@
 
   onMount(() => {
     const cleanupScreenWidth = initScreenWidth();
+    const cleanupSystemTheme = initSystemThemeListener();
     enableAPIEvents(true);
 
     return () => {
       cleanupScreenWidth();
+      cleanupSystemTheme();
       enableAPIEvents(false);
     };
   });

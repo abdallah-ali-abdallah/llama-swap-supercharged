@@ -25,15 +25,15 @@ proxy/ui_dist/placeholder.txt:
 
 # use cached test results while developing
 test-dev: proxy/ui_dist/placeholder.txt
-	go test -short ./proxy/...
-	staticcheck ./proxy/... || true
+	go test -short ./proxy/... ./internal/...
+	staticcheck ./proxy/... ./internal/... || true
 
 test: proxy/ui_dist/placeholder.txt
-	go test -short -count=1 ./proxy/...
+	go test -short -count=1 ./proxy/... ./internal/...
 
 # for CI - full test (takes longer)
 test-all: proxy/ui_dist/placeholder.txt
-	go test -race -count=1 ./proxy/...
+	go test -race -count=1 ./proxy/... ./internal/...
 
 ui/node_modules:
 	cd ui-svelte && npm install
@@ -41,6 +41,7 @@ ui/node_modules:
 # build react UI
 ui: ui/node_modules
 	cd ui-svelte && npm run build
+	touch internal/server/ui_dist/placeholder.txt
 
 # Build OSX binary
 mac: ui
@@ -97,6 +98,9 @@ wol-proxy: $(BUILD_DIR)
 	@echo "Building wol-proxy"
 	go build -o $(BUILD_DIR)/wol-proxy-$(GOOS)-$(GOARCH)-$(shell date +%Y-%m-%d) cmd/wol-proxy/wol-proxy.go
 
+test-ui:
+	cd ui-svelte && npm ci && npm run check && npm test
+
 # Phony targets
-.PHONY: all clean ui mac windows simple-responder simple-responder-windows test test-all test-dev wol-proxy
+.PHONY: all clean ui mac windows simple-responder simple-responder-windows test test-all test-dev test-ui wol-proxy
 .PHONE: linux linux-arm64 linux-amd64

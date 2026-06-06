@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/proxy/config"
+	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/mostlygeek/llama-swap/internal/logmon"
 )
 
 type peerProxyMember struct {
@@ -24,7 +25,7 @@ type PeerProxy struct {
 	proxyMap map[string]*peerProxyMember
 }
 
-func NewPeerProxy(peers config.PeerDictionaryConfig, proxyLogger *LogMonitor) (*PeerProxy, error) {
+func NewPeerProxy(peers config.PeerDictionaryConfig, proxyLogger *logmon.Monitor) (*PeerProxy, error) {
 	proxyMap := make(map[string]*peerProxyMember)
 
 	// Sort peer IDs for consistent iteration order

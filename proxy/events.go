@@ -5,8 +5,7 @@ package proxy
 const ProcessStateChangeEventID = 0x01
 const ChatCompletionStatsEventID = 0x02
 const ConfigFileChangedEventID = 0x03
-const LogDataEventID = 0x04
-const TokenMetricsEventID = 0x05
+const ActivityLogEventID = 0x05
 const ModelPreloadedEventID = 0x06
 const InFlightRequestsEventID = 0x07
 const LiveActivityEventID = 0x08
@@ -42,14 +41,6 @@ type ConfigFileChangedEvent struct {
 
 func (e ConfigFileChangedEvent) Type() uint32 {
 	return ConfigFileChangedEventID
-}
-
-type LogDataEvent struct {
-	Data []byte
-}
-
-func (e LogDataEvent) Type() uint32 {
-	return LogDataEventID
 }
 
 type ModelPreloadedEvent struct {
