@@ -102,6 +102,7 @@ type liveActivityTracker struct {
 	nextSequence  int64
 	rows          map[string]LiveActivityRow
 	activeByModel map[string]map[string]struct{}
+	slotTaskToRow map[string]string
 	tokenStreams  map[string]*tokenStream
 }
 
@@ -109,6 +110,7 @@ func newLiveActivityTracker() *liveActivityTracker {
 	return &liveActivityTracker{
 		rows:          make(map[string]LiveActivityRow),
 		activeByModel: make(map[string]map[string]struct{}),
+		slotTaskToRow: make(map[string]string),
 		tokenStreams:  make(map[string]*tokenStream),
 	}
 }
@@ -172,6 +174,65 @@ func (t *liveActivityTracker) GetTokenStream(id string) *tokenStream {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.tokenStreams[id]
+}
+
+func (t *liveActivityTracker) assignSlotTask(model string, slotID, taskID int) string {
+	key := fmt.Sprintf("%s:%d:%d", model, slotID, taskID)
+	if id, ok := t.slotTaskToRow[key]; ok {
+		return id
+	}
+	// fallback: find any active row for this model without a slot/task assigned
+	if active := t.activeByModel[model]; active != nil {
+		for id := range active {
+			return id
+		}
+	}
+	return ""
+}
+
+func (t *liveActivityTracker) SetPromptProgress(model string, slotID, taskID int, progress float64, speed float64) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	rowID := t.assignSlotTask(model, slotID, taskID)
+	if rowID == "" {
+		t.mu.Unlock()
+		return
+	}
+	row := t.rows[rowID]
+	row.PPProgress = progress
+	row.PPExact = true
+	if speed > 0 {
+		row.PPSpeed = speed
+	}
+	row.UpdatedAt = time.Now().UnixMilli()
+	t.rows[rowID] = row
+	rows := t.snapshotLocked()
+	t.mu.Unlock()
+	event.Emit(LiveActivityEvent{Rows: rows})
+}
+
+func (t *liveActivityTracker) SetGeneratedTokens(model string, slotID, taskID int, tokens int, speed float64) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	rowID := t.assignSlotTask(model, slotID, taskID)
+	if rowID == "" {
+		t.mu.Unlock()
+		return
+	}
+	row := t.rows[rowID]
+	row.GeneratedTokens = tokens
+	if speed > 0 {
+		row.TGSpeed = speed
+	}
+	row.UpdatedAt = time.Now().UnixMilli()
+	t.rows[rowID] = row
+	rows := t.snapshotLocked()
+	t.mu.Unlock()
+	event.Emit(LiveActivityEvent{Rows: rows})
 }
 
 func (t *liveActivityTracker) snapshotLocked() []LiveActivityRow {
