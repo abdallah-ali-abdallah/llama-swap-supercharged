@@ -123,6 +123,12 @@ func (mp *metricsMonitor) addCapture(capture ReqRespCapture) bool {
 		return false
 	}
 
+	if mp.store != nil {
+		if err := mp.store.persistCapture(capture.ID, capture); err != nil {
+			mp.logger.Warnf("failed to persist capture %d to store: %v", capture.ID, err)
+		}
+	}
+
 	compressionRatio := (1 - float64(len(compressed))/float64(uncompressedBytes)) * 100
 	mp.logger.Debugf("Capture %d compressed and saved: %d bytes -> %d bytes (%.1f%% compression)", capture.ID, uncompressedBytes, len(compressed), compressionRatio)
 	return true

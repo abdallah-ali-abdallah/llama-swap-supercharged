@@ -133,6 +133,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		shutdownCtx: shutdownCtx,
 		shutdownFn:  shutdownFn,
 	}
+	s.metrics.store = openMetricsStore(cfg, proxylog)
 	s.routes()
 	s.startPreload()
 	return s, nil

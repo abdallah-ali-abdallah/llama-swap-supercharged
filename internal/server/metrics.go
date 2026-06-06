@@ -59,6 +59,7 @@ type metricsMonitor struct {
 	metrics ring.Buffer[ActivityLogEntry]
 	nextID  int
 	logger  *logmon.Monitor
+	store   *metricsStore
 
 	enableCaptures bool
 	captureCache   *cache.Cache // zstd-compressed CBOR of ReqRespCapture
@@ -89,6 +90,9 @@ func (mp *metricsMonitor) queueMetrics(metric ActivityLogEntry) int {
 	metric.ID = mp.nextID
 	mp.nextID++
 	mp.metrics.Push(metric)
+	if mp.store != nil {
+		mp.store.persistMetric(metric)
+	}
 	return metric.ID
 }
 
