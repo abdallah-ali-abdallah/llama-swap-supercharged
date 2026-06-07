@@ -18,14 +18,6 @@ import (
 
 const defaultMetricsQueryMaxRows = 100000
 
-// metricsQuery holds filter parameters for metric queries.
-type metricsQuery struct {
-	From  *time.Time
-	To    *time.Time
-	Limit int
-	Scope string
-}
-
 type activityFieldsSettings struct {
 	Model    bool `json:"model"`
 	Tokens   bool `json:"tokens"`
@@ -37,7 +29,6 @@ type persistenceSettings struct {
 	SQLiteAvailable            bool                   `json:"sqlite_available"`
 	YAMLAvailable              bool                   `json:"yaml_available"`
 	YAMLPath                   string                 `json:"yaml_path"`
-	YAMLConflicts              []persistenceConflict  `json:"yaml_conflicts,omitempty"`
 	DBPath                     string                 `json:"db_path"`
 	RetentionDays              int                    `json:"retention_days"`
 	LoggingEnabled             bool                   `json:"logging_enabled"`
@@ -65,12 +56,6 @@ type persistenceStats struct {
 	NewestActivityMs int64 `json:"newest_activity_ms,omitempty"`
 }
 
-type persistenceConflict struct {
-	Field       string `json:"field"`
-	YAMLValue   string `json:"yaml_value"`
-	SQLiteValue string `json:"sqlite_value"`
-}
-
 // metricsStore persists metrics and captures to SQLite.
 type metricsStore struct {
 	mu                         sync.RWMutex
@@ -85,14 +70,7 @@ type metricsStore struct {
 	activityCapturePersistence bool
 	captureRedactHeaders       bool
 	activityFields             activityFieldsSettings
-	yamlConflicts              []persistenceConflict
 	logger                     *logmon.Monitor
-}
-
-func newMetricsStore(path string, retentionDays int, defaultQueryRows int, logger *logmon.Monitor) (*metricsStore, error) {
-	return newMetricsStoreWithOptions(path, retentionDays, defaultQueryRows, true, true, false, config.ActivityFieldsConfig{
-		Model: true, Tokens: true, Speeds: true, Duration: true,
-	}, logger)
 }
 
 func newMetricsStoreWithOptions(
@@ -221,63 +199,6 @@ func (s *metricsStore) persistMetric(entry ActivityLogEntry) error {
 	return err
 }
 
-func (s *metricsStore) queryMetrics(q metricsQuery) ([]ActivityLogEntry, error) {
-	if s == nil || s.db == nil {
-		return nil, nil
-	}
-	if q.Limit <= 0 {
-		q.Limit = s.defaultQueryRows
-	}
-	var args []any
-	var conds []string
-	if q.From != nil {
-		conds = append(conds, "timestamp_ms >= ?")
-		args = append(args, unixMs(*q.From))
-	}
-	if q.To != nil {
-		conds = append(conds, "timestamp_ms <= ?")
-		args = append(args, unixMs(*q.To))
-	}
-	if q.Scope != "" {
-		conds = append(conds, "model = ?")
-		args = append(args, q.Scope)
-	}
-	where := ""
-	if len(conds) > 0 {
-		where = "WHERE " + strings.Join(conds, " AND ")
-	}
-	query := fmt.Sprintf(`SELECT id, timestamp_ms, model, req_path, resp_content_type, resp_status_code,
-		tokens_json, duration_ms, prompt_ms, predicted_ms, has_capture, multimodal
-		FROM activity_metrics %s ORDER BY timestamp_ms DESC LIMIT ?`, where)
-	args = append(args, q.Limit)
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []ActivityLogEntry
-	for rows.Next() {
-		var tsMs int64
-		var tokensJSON string
-		var e ActivityLogEntry
-		var hasCap int
-		var promptMs, predictedMs int
-		var multimodal int
-		err := rows.Scan(&e.ID, &tsMs, &e.Model, &e.ReqPath, &e.RespContentType, &e.RespStatusCode,
-			&tokensJSON, &e.DurationMs, &promptMs, &predictedMs, &hasCap, &multimodal)
-		if err != nil {
-			continue
-		}
-		e.Timestamp = time.UnixMilli(tsMs)
-		e.HasCapture = hasCap != 0
-		json.Unmarshal([]byte(tokensJSON), &e.Tokens)
-		results = append(results, e)
-	}
-	return results, rows.Err()
-}
-
 func (s *metricsStore) persistCapture(id int, capture ReqRespCapture) error {
 	if s == nil || s.db == nil || !s.activityCapturePersistence {
 		return nil
@@ -289,25 +210,6 @@ func (s *metricsStore) persistCapture(id int, capture ReqRespCapture) error {
 	_, err = s.db.Exec(`INSERT INTO activity_request_captures (id, created_ms, capture_zstd) VALUES (?, ?, ?)`,
 		id, time.Now().UnixMilli(), data)
 	return err
-}
-
-func (s *metricsStore) getCapture(id int) (*ReqRespCapture, error) {
-	if s == nil || s.db == nil {
-		return nil, nil
-	}
-	var data []byte
-	err := s.db.QueryRow(`SELECT capture_zstd FROM activity_request_captures WHERE id = ?`, id).Scan(&data)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var capture ReqRespCapture
-	if err := json.Unmarshal(data, &capture); err != nil {
-		return nil, err
-	}
-	return &capture, nil
 }
 
 func (s *metricsStore) cleanup() error {
@@ -391,7 +293,7 @@ func (s *metricsStore) updateSettings(ps persistenceSettings) error {
 	s.activityFields = ps.ActivityFields
 
 	pairs := map[string]string{
-		"logging_enabled":             fmt.Sprintf("%t", ps.LoggingEnabled),
+		"logging_enabled":              fmt.Sprintf("%t", ps.LoggingEnabled),
 		"usage_metrics_persistence":    fmt.Sprintf("%t", ps.UsageMetricsPersistence),
 		"activity_persistence":         fmt.Sprintf("%t", ps.ActivityPersistence),
 		"activity_capture_persistence": fmt.Sprintf("%t", ps.ActivityCapturePersistence),

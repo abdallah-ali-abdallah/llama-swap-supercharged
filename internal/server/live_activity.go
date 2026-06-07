@@ -17,19 +17,23 @@ const liveActivityStatusInProgress = "in_progress"
 
 // LiveActivityRow represents a single in-flight request.
 type LiveActivityRow struct {
-	ID              string  `json:"id"`
-	Sequence        int64   `json:"sequence"`
-	Timestamp       int64   `json:"timestamp"`
-	Model           string  `json:"model"`
-	Status          string  `json:"status"`
-	SlotID          int     `json:"slot_id,omitempty"`
-	TaskID          int     `json:"task_id,omitempty"`
-	PPProgress      float64 `json:"pp_progress,omitempty"`
-	PPExact         bool    `json:"pp_exact,omitempty"`
-	PPSpeed         float64 `json:"pp_speed,omitempty"`
-	UpdatedAt       int64   `json:"updated_at,omitempty"`
-	GeneratedTokens int     `json:"generated_tokens,omitempty"`
-	TGSpeed         float64 `json:"tg_speed,omitempty"`
+	ID                  string                  `json:"id"`
+	Sequence            int64                   `json:"sequence"`
+	Timestamp           int64                   `json:"timestamp"`
+	Model               string                  `json:"model"`
+	Status              string                  `json:"status"`
+	SlotID              int                     `json:"slot_id,omitempty"`
+	TaskID              int                     `json:"task_id,omitempty"`
+	PPProgress          float64                 `json:"pp_progress,omitempty"`
+	PPExact             bool                    `json:"pp_exact,omitempty"`
+	PPSpeed             float64                 `json:"pp_speed,omitempty"`
+	UpdatedAt           int64                   `json:"updated_at,omitempty"`
+	GeneratedTokens     int                     `json:"generated_tokens,omitempty"`
+	TGSpeed             float64                 `json:"tg_speed,omitempty"`
+	MemorySnapshot      *LlamaCppMemorySnapshot `json:"memory_snapshot,omitempty"`
+	SpecDecodeRate      float64                 `json:"spec_decode_rate,omitempty"`
+	SpecDecodeAccepted  int                     `json:"spec_decode_accepted,omitempty"`
+	SpecDecodeGenerated int                     `json:"spec_decode_generated,omitempty"`
 }
 
 // LiveActivityEvent is emitted when live activity rows change.
@@ -42,25 +46,10 @@ func (e LiveActivityEvent) Type() uint32 {
 }
 
 type tokenStream struct {
-	mu       sync.RWMutex
-	chunks   []TokenStreamChunk
-	closed   bool
-	waiters  []chan TokenStreamChunk
-}
-
-func (ts *tokenStream) append(chunk TokenStreamChunk) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	if ts.closed {
-		return
-	}
-	ts.chunks = append(ts.chunks, chunk)
-	for _, w := range ts.waiters {
-		select {
-		case w <- chunk:
-		default:
-		}
-	}
+	mu      sync.RWMutex
+	chunks  []TokenStreamChunk
+	closed  bool
+	waiters []chan TokenStreamChunk
 }
 
 func (ts *tokenStream) close() {
@@ -233,6 +222,58 @@ func (t *liveActivityTracker) SetGeneratedTokens(model string, slotID, taskID in
 	rows := t.snapshotLocked()
 	t.mu.Unlock()
 	event.Emit(LiveActivityEvent{Rows: rows})
+}
+
+func (t *liveActivityTracker) SetMemorySnapshot(model string, snapshot *LlamaCppMemorySnapshot) {
+	if t == nil || snapshot == nil {
+		return
+	}
+	t.mu.Lock()
+	changed := false
+	if active := t.activeByModel[model]; active != nil {
+		for id := range active {
+			row := t.rows[id]
+			row.MemorySnapshot = snapshot
+			row.UpdatedAt = time.Now().UnixMilli()
+			t.rows[id] = row
+			changed = true
+		}
+	}
+	var rows []LiveActivityRow
+	if changed {
+		rows = t.snapshotLocked()
+	}
+	t.mu.Unlock()
+	if changed {
+		event.Emit(LiveActivityEvent{Rows: rows})
+	}
+}
+
+func (t *liveActivityTracker) SetSpecDecodeStats(model string, rate float64, accepted, generated int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	changed := false
+	if active := t.activeByModel[model]; active != nil {
+		for id := range active {
+			row := t.rows[id]
+			row.SpecDecodeRate = rate
+			row.SpecDecodeAccepted = accepted
+			row.SpecDecodeGenerated = generated
+			row.UpdatedAt = time.Now().UnixMilli()
+			t.rows[id] = row
+			changed = true
+		}
+	}
+	var rows []LiveActivityRow
+	if changed {
+		rows = t.snapshotLocked()
+	}
+	t.mu.Unlock()
+	if changed {
+		event.Emit(LiveActivityEvent{Rows: rows})
+	}
 }
 
 func (t *liveActivityTracker) snapshotLocked() []LiveActivityRow {

@@ -142,21 +142,6 @@ proxy: "http://127.0.0.1:%d"
 }
 
 // injectTestHandlers sets a testHandler on every Process in every ProcessGroup
-// of the given ProxyManager, bypassing subprocess launches. modelResponses maps
-// model IDs to their respond strings; if a model ID is not in the map, the model
-// ID itself is used.
-func injectTestHandlers(pm *ProxyManager, modelResponses map[string]string) {
-	for _, pg := range pm.processGroups {
-		for modelID, process := range pg.processes {
-			respond := modelID
-			if r, ok := modelResponses[modelID]; ok {
-				respond = r
-			}
-			process.testHandler = newTestHandler(respond)
-		}
-	}
-}
-
 // newTestHandler returns an http.Handler that mimics simple-responder's API.
 // It supports the endpoints that routing tests depend on, without launching
 // any subprocess or binding any port.

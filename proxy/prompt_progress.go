@@ -307,18 +307,6 @@ func (ts *tokenStream) addWaiter() chan tokenStreamChunk {
 	return ch
 }
 
-func (ts *tokenStream) removeWaiter(ch chan tokenStreamChunk) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	for i, w := range ts.waiters {
-		if w == ch {
-			ts.waiters = append(ts.waiters[:i], ts.waiters[i+1:]...)
-			close(ch)
-			break
-		}
-	}
-}
-
 type liveActivityTracker struct {
 	mu             sync.RWMutex
 	nextSequence   int64

@@ -27,13 +27,13 @@ type Server struct {
 	proxylog    *logmon.Monitor
 	upstreamlog *logmon.Monitor
 
-	perf     *perf.Monitor
-	inflight *inflightCounter
-	metrics  *metricsMonitor
-	cancel   *requestCancelRegistry
+	perf         *perf.Monitor
+	inflight     *inflightCounter
+	metrics      *metricsMonitor
+	cancel       *requestCancelRegistry
 	liveActivity *liveActivityTracker
-	parserReg *parserRegistry
-	build    BuildInfo
+	parserReg    *parserRegistry
+	build        BuildInfo
 
 	local router.LocalRouter
 	peer  router.Router
